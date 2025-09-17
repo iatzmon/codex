@@ -64,6 +64,8 @@ pub(crate) struct BottomPane {
     status: Option<StatusIndicatorWidget>,
     /// Queued user messages to show under the status indicator.
     queued_user_messages: Vec<String>,
+    #[cfg(feature = "slash_commands")]
+    custom_slash_commands: Vec<crate::slash_command::CustomSlashCommand>,
 }
 
 pub(crate) struct BottomPaneParams {
@@ -73,29 +75,47 @@ pub(crate) struct BottomPaneParams {
     pub(crate) enhanced_keys_supported: bool,
     pub(crate) placeholder_text: String,
     pub(crate) disable_paste_burst: bool,
+    #[cfg(feature = "slash_commands")]
+    pub(crate) custom_slash_commands: Vec<crate::slash_command::CustomSlashCommand>,
 }
 
 impl BottomPane {
     const BOTTOM_PAD_LINES: u16 = 1;
     pub fn new(params: BottomPaneParams) -> Self {
-        let enhanced_keys_supported = params.enhanced_keys_supported;
+        let BottomPaneParams {
+            app_event_tx,
+            frame_requester,
+            has_input_focus,
+            enhanced_keys_supported,
+            placeholder_text,
+            disable_paste_burst,
+            #[cfg(feature = "slash_commands")]
+            custom_slash_commands,
+        } = params;
+        let enhanced_keys_supported_flag = enhanced_keys_supported;
+        #[cfg(feature = "slash_commands")]
+        let custom_slash_commands_field = custom_slash_commands.clone();
         Self {
             composer: ChatComposer::new(
-                params.has_input_focus,
-                params.app_event_tx.clone(),
-                enhanced_keys_supported,
-                params.placeholder_text,
-                params.disable_paste_burst,
+                has_input_focus,
+                app_event_tx.clone(),
+                enhanced_keys_supported_flag,
+                placeholder_text,
+                disable_paste_burst,
+                #[cfg(feature = "slash_commands")]
+                custom_slash_commands,
             ),
             active_view: None,
-            app_event_tx: params.app_event_tx,
-            frame_requester: params.frame_requester,
-            has_input_focus: params.has_input_focus,
+            app_event_tx,
+            frame_requester,
+            has_input_focus,
             is_task_running: false,
             ctrl_c_quit_hint: false,
             status: None,
             queued_user_messages: Vec::new(),
             esc_backtrack_hint: false,
+            #[cfg(feature = "slash_commands")]
+            custom_slash_commands: custom_slash_commands_field,
         }
     }
 
@@ -351,6 +371,16 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    #[cfg(feature = "slash_commands")]
+    pub(crate) fn set_custom_slash_commands(
+        &mut self,
+        commands: Vec<crate::slash_command::CustomSlashCommand>,
+    ) {
+        self.custom_slash_commands = commands.clone();
+        self.composer.set_custom_slash_commands(commands);
+        self.request_redraw();
+    }
+
     pub(crate) fn composer_is_empty(&self) -> bool {
         self.composer.is_empty()
     }
@@ -519,6 +549,8 @@ mod tests {
             enhanced_keys_supported: false,
             placeholder_text: "Ask Codex to do anything".to_string(),
             disable_paste_burst: false,
+            #[cfg(feature = "slash_commands")]
+            custom_slash_commands: Vec::new(),
         });
         pane.push_approval_request(exec_request());
         assert_eq!(CancellationEvent::Handled, pane.on_ctrl_c());
@@ -539,6 +571,8 @@ mod tests {
             enhanced_keys_supported: false,
             placeholder_text: "Ask Codex to do anything".to_string(),
             disable_paste_burst: false,
+            #[cfg(feature = "slash_commands")]
+            custom_slash_commands: Vec::new(),
         });
 
         // Create an approval modal (active view).
@@ -570,6 +604,8 @@ mod tests {
             enhanced_keys_supported: false,
             placeholder_text: "Ask Codex to do anything".to_string(),
             disable_paste_burst: false,
+            #[cfg(feature = "slash_commands")]
+            custom_slash_commands: Vec::new(),
         });
 
         // Start a running task so the status indicator is active above the composer.
@@ -638,6 +674,8 @@ mod tests {
             enhanced_keys_supported: false,
             placeholder_text: "Ask Codex to do anything".to_string(),
             disable_paste_burst: false,
+            #[cfg(feature = "slash_commands")]
+            custom_slash_commands: Vec::new(),
         });
 
         // Begin a task: show initial status.
@@ -669,6 +707,8 @@ mod tests {
             enhanced_keys_supported: false,
             placeholder_text: "Ask Codex to do anything".to_string(),
             disable_paste_burst: false,
+            #[cfg(feature = "slash_commands")]
+            custom_slash_commands: Vec::new(),
         });
 
         // Activate spinner (status view replaces composer) with no live ring.
@@ -720,6 +760,8 @@ mod tests {
             enhanced_keys_supported: false,
             placeholder_text: "Ask Codex to do anything".to_string(),
             disable_paste_burst: false,
+            #[cfg(feature = "slash_commands")]
+            custom_slash_commands: Vec::new(),
         });
 
         pane.set_task_running(true);

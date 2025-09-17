@@ -3,6 +3,10 @@ edition = "2024"
 name = "codex-core"
 version = { workspace = true }
 
+[features]
+default = []
+slash_commands = ["codex-slash-commands"]
+
 [lib]
 name = "codex_core"
 path = "src/lib.rs"
@@ -13,6 +17,7 @@ workspace = true
 
 [dependencies]
 anyhow = "1"
+codex-slash-commands = { path = "../slash-commands", optional = true }
 askama = "0.12"
 async-channel = "2.3.1"
 base64 = "0.22"

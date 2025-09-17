@@ -1,0 +1,21 @@
+pub mod command_line;
+pub mod config;
+pub mod discovery;
+pub mod errors;
+pub mod interpolation;
+pub mod models;
+pub mod namespace;
+pub mod parsing;
+pub mod performance;
+pub mod registry;
+
+pub use command_line::parse_command_line;
+pub use config::SlashCommandConfig;
+pub use errors::SlashCommandError;
+pub use interpolation::interpolate_template;
+pub use models::command::Command;
+pub use models::context::InterpolationContext;
+pub use models::metadata::FrontmatterMetadata;
+pub use models::scope::CommandScope;
+pub use registry::CommandLookup;
+pub use registry::CommandRegistry;

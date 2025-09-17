@@ -5,6 +5,8 @@ use crate::chatwidget::ChatWidget;
 use crate::file_search::FileSearchManager;
 use crate::pager_overlay::Overlay;
 use crate::resume_picker::ResumeSelection;
+#[cfg(feature = "slash_commands")]
+use crate::slash_command::CustomSlashCommand;
 use crate::tui;
 use crate::tui::TuiEvent;
 use codex_ansi_escape::ansi_escape_line;
@@ -42,6 +44,8 @@ pub(crate) struct App {
     /// Config is stored here so we can recreate ChatWidgets as needed.
     pub(crate) config: Config,
     pub(crate) active_profile: Option<String>,
+    #[cfg(feature = "slash_commands")]
+    pub(crate) custom_slash_commands: Vec<CustomSlashCommand>,
 
     pub(crate) file_search: FileSearchManager,
 
@@ -61,6 +65,25 @@ pub(crate) struct App {
     pub(crate) backtrack: crate::app_backtrack::BacktrackState,
 }
 
+#[cfg(feature = "slash_commands")]
+async fn load_custom_slash_commands(
+    config: &Config,
+) -> Result<Vec<CustomSlashCommand>, codex_slash_commands::SlashCommandError> {
+    use codex_slash_commands::CommandRegistry;
+    use codex_slash_commands::SlashCommandConfig;
+
+    let cfg = SlashCommandConfig::from_environment(
+        Some(config.cwd.clone()),
+        Some(config.codex_home.clone()),
+    );
+    let registry = CommandRegistry::load(&cfg).await?;
+    Ok(registry
+        .all()
+        .into_iter()
+        .map(CustomSlashCommand::from_model)
+        .collect())
+}
+
 impl App {
     pub async fn run(
         tui: &mut tui::Tui,
@@ -77,6 +100,15 @@ impl App {
 
         let conversation_manager = Arc::new(ConversationManager::new(auth_manager.clone()));
 
+        #[cfg(feature = "slash_commands")]
+        let custom_slash_commands = match load_custom_slash_commands(&config).await {
+            Ok(commands) => commands,
+            Err(err) => {
+                tracing::warn!("failed to load slash commands: {err}");
+                Vec::new()
+            }
+        };
+
         let enhanced_keys_supported = supports_keyboard_enhancement().unwrap_or(false);
 
         let chat_widget = match resume_selection {
@@ -89,6 +121,8 @@ impl App {
                     initial_images: initial_images.clone(),
                     enhanced_keys_supported,
                     auth_manager: auth_manager.clone(),
+                    #[cfg(feature = "slash_commands")]
+                    custom_slash_commands: custom_slash_commands.clone(),
                 };
                 ChatWidget::new(init, conversation_manager.clone())
             }
@@ -111,6 +145,8 @@ impl App {
                     initial_images: initial_images.clone(),
                     enhanced_keys_supported,
                     auth_manager: auth_manager.clone(),
+                    #[cfg(feature = "slash_commands")]
+                    custom_slash_commands: custom_slash_commands.clone(),
                 };
                 ChatWidget::new_from_existing(
                     init,
@@ -129,6 +165,8 @@ impl App {
             auth_manager: auth_manager.clone(),
             config,
             active_profile,
+            #[cfg(feature = "slash_commands")]
+            custom_slash_commands: custom_slash_commands.clone(),
             file_search,
             enhanced_keys_supported,
             transcript_lines: Vec::new(),
@@ -210,6 +248,8 @@ impl App {
                     initial_images: Vec::new(),
                     enhanced_keys_supported: self.enhanced_keys_supported,
                     auth_manager: self.auth_manager.clone(),
+                    #[cfg(feature = "slash_commands")]
+                    custom_slash_commands: self.custom_slash_commands.clone(),
                 };
                 self.chat_widget = ChatWidget::new(init, self.server.clone());
                 tui.frame_requester().schedule_frame();
@@ -347,6 +387,12 @@ impl App {
             AppEvent::UpdateSandboxPolicy(policy) => {
                 self.chat_widget.set_sandbox_policy(policy);
             }
+            #[cfg(feature = "slash_commands")]
+            AppEvent::CustomSlashCommandsReloaded { commands } => {
+                self.custom_slash_commands = commands.clone();
+                self.chat_widget.on_custom_slash_commands_reloaded(commands);
+                tui.frame_requester().schedule_frame();
+            }
         }
         Ok(true)
     }
@@ -451,6 +497,8 @@ mod tests {
             auth_manager,
             config,
             active_profile: None,
+            #[cfg(feature = "slash_commands")]
+            custom_slash_commands: Vec::new(),
             file_search,
             transcript_lines: Vec::<Line<'static>>::new(),
             overlay: None,

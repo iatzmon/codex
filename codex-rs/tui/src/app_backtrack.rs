@@ -329,6 +329,8 @@ impl App {
             initial_images: Vec::new(),
             enhanced_keys_supported: self.enhanced_keys_supported,
             auth_manager: self.auth_manager.clone(),
+            #[cfg(feature = "slash_commands")]
+            custom_slash_commands: self.custom_slash_commands.clone(),
         };
         self.chat_widget =
             crate::chatwidget::ChatWidget::new_from_existing(init, conv, session_configured);

@@ -124,6 +124,9 @@ pub enum Op {
         summary: Option<ReasoningSummaryConfig>,
     },
 
+    /// Reload the slash command registry for the active conversation.
+    ReloadSlashCommands,
+
     /// Approve a command execution
     ExecApproval {
         /// The id of the submission we are approving

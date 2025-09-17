@@ -67,6 +67,8 @@ use crate::history_cell::CommandOutput;
 use crate::history_cell::ExecCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::PatchEventType;
+#[cfg(feature = "slash_commands")]
+use crate::slash_command::CustomSlashCommand;
 use crate::slash_command::SlashCommand;
 use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
@@ -92,6 +94,12 @@ use codex_core::protocol::SandboxPolicy;
 use codex_core::protocol_config_types::ReasoningEffort as ReasoningEffortConfig;
 use codex_file_search::FileMatch;
 use codex_protocol::mcp_protocol::ConversationId;
+#[cfg(feature = "slash_commands")]
+use codex_slash_commands::CommandRegistry as DynamicCommandRegistry;
+#[cfg(feature = "slash_commands")]
+use codex_slash_commands::SlashCommandConfig as DynamicSlashCommandConfig;
+#[cfg(feature = "slash_commands")]
+use codex_slash_commands::SlashCommandError as DynamicSlashCommandError;
 
 // Track information about an in-flight exec command.
 struct RunningCommand {
@@ -108,6 +116,8 @@ pub(crate) struct ChatWidgetInit {
     pub(crate) initial_images: Vec<PathBuf>,
     pub(crate) enhanced_keys_supported: bool,
     pub(crate) auth_manager: Arc<AuthManager>,
+    #[cfg(feature = "slash_commands")]
+    pub(crate) custom_slash_commands: Vec<CustomSlashCommand>,
 }
 
 pub(crate) struct ChatWidget {
@@ -120,6 +130,8 @@ pub(crate) struct ChatWidget {
     session_header: SessionHeader,
     initial_user_message: Option<UserMessage>,
     token_info: Option<TokenUsageInfo>,
+    #[cfg(feature = "slash_commands")]
+    custom_slash_commands: Vec<CustomSlashCommand>,
     // Stream lifecycle controller
     stream: StreamController,
     running_commands: HashMap<String, RunningCommand>,
@@ -157,6 +169,22 @@ impl From<String> for UserMessage {
     }
 }
 
+#[cfg(feature = "slash_commands")]
+async fn load_custom_slash_commands_for_config(
+    config: &Config,
+) -> Result<Vec<CustomSlashCommand>, DynamicSlashCommandError> {
+    let cfg = DynamicSlashCommandConfig::from_environment(
+        Some(config.cwd.clone()),
+        Some(config.codex_home.clone()),
+    );
+    let registry = DynamicCommandRegistry::load(&cfg).await?;
+    Ok(registry
+        .all()
+        .into_iter()
+        .map(CustomSlashCommand::from_model)
+        .collect())
+}
+
 fn create_initial_user_message(text: String, image_paths: Vec<PathBuf>) -> Option<UserMessage> {
     if text.is_empty() && image_paths.is_empty() {
         None
@@ -182,6 +210,8 @@ impl ChatWidget {
             &self.config,
             event,
             self.show_welcome_banner,
+            #[cfg(feature = "slash_commands")]
+            &self.custom_slash_commands,
         ));
         if let Some(messages) = initial_messages {
             self.replay_initial_messages(messages);
@@ -664,6 +694,8 @@ impl ChatWidget {
             initial_images,
             enhanced_keys_supported,
             auth_manager,
+            #[cfg(feature = "slash_commands")]
+            custom_slash_commands,
         } = common;
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
@@ -680,6 +712,8 @@ impl ChatWidget {
                 enhanced_keys_supported,
                 placeholder_text: placeholder,
                 disable_paste_burst: config.disable_paste_burst,
+                #[cfg(feature = "slash_commands")]
+                custom_slash_commands: custom_slash_commands.clone(),
             }),
             active_exec_cell: None,
             config: config.clone(),
@@ -690,6 +724,8 @@ impl ChatWidget {
                 initial_images,
             ),
             token_info: None,
+            #[cfg(feature = "slash_commands")]
+            custom_slash_commands,
             stream: StreamController::new(config),
             running_commands: HashMap::new(),
             task_complete_pending: false,
@@ -718,6 +754,8 @@ impl ChatWidget {
             initial_images,
             enhanced_keys_supported,
             auth_manager,
+            #[cfg(feature = "slash_commands")]
+            custom_slash_commands,
         } = common;
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
@@ -736,6 +774,8 @@ impl ChatWidget {
                 enhanced_keys_supported,
                 placeholder_text: placeholder,
                 disable_paste_burst: config.disable_paste_burst,
+                #[cfg(feature = "slash_commands")]
+                custom_slash_commands: custom_slash_commands.clone(),
             }),
             active_exec_cell: None,
             config: config.clone(),
@@ -746,6 +786,8 @@ impl ChatWidget {
                 initial_images,
             ),
             token_info: None,
+            #[cfg(feature = "slash_commands")]
+            custom_slash_commands,
             stream: StreamController::new(config),
             running_commands: HashMap::new(),
             task_complete_pending: false,
@@ -825,8 +867,8 @@ impl ChatWidget {
                             self.submit_user_message(user_message);
                         }
                     }
-                    InputResult::Command(cmd) => {
-                        self.dispatch_command(cmd);
+                    InputResult::Command { command, arguments } => {
+                        self.dispatch_command(command, &arguments);
                     }
                     InputResult::None => {}
                 }
@@ -849,7 +891,7 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    fn dispatch_command(&mut self, cmd: SlashCommand) {
+    fn dispatch_command(&mut self, cmd: SlashCommand, arguments: &str) {
         if !cmd.available_during_task() && self.bottom_pane.is_task_running() {
             let message = format!(
                 "'/{}' is disabled while a task is in progress.",
@@ -912,6 +954,14 @@ impl ChatWidget {
             SlashCommand::Mcp => {
                 self.add_mcp_output();
             }
+            SlashCommand::Help => {
+                let trimmed = arguments.trim();
+                if trimmed.eq_ignore_ascii_case("reload") {
+                    self.enqueue_slash_command_reload();
+                } else {
+                    self.show_slash_command_help();
+                }
+            }
             #[cfg(debug_assertions)]
             SlashCommand::TestApproval => {
                 use codex_core::protocol::EventMsg;
@@ -951,6 +1001,72 @@ impl ChatWidget {
                 }));
             }
         }
+    }
+
+    #[cfg(feature = "slash_commands")]
+    fn set_custom_slash_commands(&mut self, commands: Vec<CustomSlashCommand>) {
+        self.custom_slash_commands = commands.clone();
+        self.bottom_pane.set_custom_slash_commands(commands);
+    }
+
+    #[cfg(feature = "slash_commands")]
+    pub(crate) fn on_custom_slash_commands_reloaded(&mut self, commands: Vec<CustomSlashCommand>) {
+        self.set_custom_slash_commands(commands);
+        self.request_redraw();
+    }
+
+    #[cfg(not(feature = "slash_commands"))]
+    fn enqueue_slash_command_reload(&mut self) {
+        self.add_to_history(history_cell::new_error_event(
+            "Slash commands are not enabled in this build.".to_string(),
+        ));
+        self.request_redraw();
+    }
+
+    #[cfg(feature = "slash_commands")]
+    fn enqueue_slash_command_reload(&mut self) {
+        self.add_to_history(history_cell::new_info_event(
+            "Reloading custom slash commands…".to_string(),
+            None,
+        ));
+        self.request_redraw();
+
+        let config = self.config.clone();
+        let tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            match load_custom_slash_commands_for_config(&config).await {
+                Ok(commands) => {
+                    tx.send(AppEvent::CustomSlashCommandsReloaded { commands });
+                }
+                Err(err) => {
+                    let message = format!("Failed to reload custom slash commands: {err}");
+                    tx.send(AppEvent::InsertHistoryCell(Box::new(
+                        history_cell::new_error_event(message),
+                    )));
+                }
+            }
+        });
+
+        self.app_event_tx
+            .send(AppEvent::CodexOp(Op::ReloadSlashCommands));
+    }
+
+    fn show_slash_command_help(&mut self) {
+        #[cfg(feature = "slash_commands")]
+        {
+            let help_cell = history_cell::new_slash_command_help(&self.custom_slash_commands);
+            self.add_to_history(help_cell);
+        }
+
+        #[cfg(not(feature = "slash_commands"))]
+        {
+            self.add_to_history(history_cell::new_info_event(
+                "Slash commands are not enabled in this build.".to_string(),
+                None,
+            ));
+        }
+
+        self.request_redraw();
     }
 
     pub(crate) fn handle_paste(&mut self, text: String) {

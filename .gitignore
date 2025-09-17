@@ -30,6 +30,8 @@ result
 # cli tools
 CLAUDE.md
 .claude/
+.specify/
+.serena/
 
 # caches
 .cache/

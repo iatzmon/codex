@@ -1,3 +1,7 @@
+#[cfg(feature = "slash_commands")]
+use codex_slash_commands::Command as DynamicSlashCommand;
+#[cfg(feature = "slash_commands")]
+use codex_slash_commands::CommandScope as DynamicSlashCommandScope;
 use strum::IntoEnumIterator;
 use strum_macros::AsRefStr;
 use strum_macros::EnumIter;
@@ -14,6 +18,7 @@ pub enum SlashCommand {
     // more frequently used commands should be listed first.
     Model,
     Approvals,
+    Help,
     New,
     Init,
     Compact,
@@ -40,6 +45,7 @@ impl SlashCommand {
             SlashCommand::Status => "show current session configuration and token usage",
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::Approvals => "choose what Codex can do without approval",
+            SlashCommand::Help => "show slash command help and reload custom commands",
             SlashCommand::Mcp => "list configured MCP tools",
             SlashCommand::Logout => "log out of Codex",
             #[cfg(debug_assertions)]
@@ -66,7 +72,8 @@ impl SlashCommand {
             | SlashCommand::Mention
             | SlashCommand::Status
             | SlashCommand::Mcp
-            | SlashCommand::Quit => true,
+            | SlashCommand::Quit
+            | SlashCommand::Help => true,
 
             #[cfg(debug_assertions)]
             SlashCommand::TestApproval => true,
@@ -77,4 +84,31 @@ impl SlashCommand {
 /// Return all built-in commands in a Vec paired with their command string.
 pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
     SlashCommand::iter().map(|c| (c.command(), c)).collect()
+}
+
+#[cfg(feature = "slash_commands")]
+#[derive(Debug, Clone)]
+pub struct CustomSlashCommand {
+    pub full_name: String,
+    pub qualified_name: String,
+    pub description: Option<String>,
+    pub argument_hint: Option<String>,
+    pub scope: DynamicSlashCommandScope,
+}
+
+#[cfg(feature = "slash_commands")]
+impl CustomSlashCommand {
+    pub fn from_model(command: &DynamicSlashCommand) -> Self {
+        Self {
+            full_name: command.full_name(),
+            qualified_name: command.qualified_name(),
+            description: command.metadata.description.clone(),
+            argument_hint: command.metadata.argument_hint.clone(),
+            scope: command.scope,
+        }
+    }
+
+    pub fn scope_label(&self) -> &'static str {
+        self.scope.as_str()
+    }
 }

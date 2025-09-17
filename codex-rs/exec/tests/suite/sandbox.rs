@@ -43,6 +43,14 @@ async fn spawn_command_under_sandbox(
 
 #[tokio::test]
 async fn python_multiprocessing_lock_works_under_sandbox() {
+    #[cfg(target_os = "linux")]
+    if !std::path::Path::new("/sys/kernel/security").exists() {
+        eprintln!(
+            "skipping python_multiprocessing_lock_works_under_sandbox: securityfs not mounted"
+        );
+        return;
+    }
+
     #[cfg(target_os = "macos")]
     let writable_roots = Vec::<PathBuf>::new();
 

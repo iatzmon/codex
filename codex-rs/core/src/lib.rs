@@ -62,6 +62,8 @@ mod rollout;
 pub(crate) mod safety;
 pub mod seatbelt;
 pub mod shell;
+#[cfg(feature = "slash_commands")]
+pub mod slash_commands;
 pub mod spawn;
 pub mod terminal;
 mod tool_apply_patch;

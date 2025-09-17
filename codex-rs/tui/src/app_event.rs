@@ -3,6 +3,8 @@ use codex_core::protocol::Event;
 use codex_file_search::FileMatch;
 
 use crate::history_cell::HistoryCell;
+#[cfg(feature = "slash_commands")]
+use crate::slash_command::CustomSlashCommand;
 
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
@@ -65,4 +67,9 @@ pub(crate) enum AppEvent {
 
     /// Forwarded conversation history snapshot from the current conversation.
     ConversationHistory(ConversationPathResponseEvent),
+
+    #[cfg(feature = "slash_commands")]
+    CustomSlashCommandsReloaded {
+        commands: Vec<CustomSlashCommand>,
+    },
 }
