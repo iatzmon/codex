@@ -1,4 +1,5 @@
 use codex_slash_commands::FrontmatterMetadata;
+use codex_slash_commands::errors::SlashCommandError;
 use codex_slash_commands::parsing::ParsedTemplate;
 use codex_slash_commands::parsing::parse_template;
 use pretty_assertions::assert_eq;
@@ -23,12 +24,30 @@ fn parses_frontmatter_metadata_and_body() {
 }
 
 #[test]
-fn invalid_frontmatter_is_ignored() {
+fn invalid_frontmatter_is_reported() {
     let raw = "---\n: -not-valid yaml\n---\nbody";
+    let error = parse_template(raw).expect_err("expected template parsing to fail");
+
+    match error {
+        SlashCommandError::InvalidTemplate(message) => {
+            assert!(
+                message.contains("failed to parse frontmatter"),
+                "unexpected error message: {message}"
+            );
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn preserves_leading_whitespace_without_frontmatter() {
+    let raw = "    echo $ARGUMENTS";
+
     let ParsedTemplate { metadata, body } =
         parse_template(raw).expect("expected template to parse");
+
     assert_eq!(metadata, FrontmatterMetadata::default());
-    assert_eq!(body, "body");
+    assert_eq!(body, raw);
 }
 
 #[test]

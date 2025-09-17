@@ -20,24 +20,40 @@ struct RawFrontmatter {
     allowed_tools: Option<Vec<String>>,
 }
 
+fn strip_leading_blank_lines(s: &str) -> &str {
+    let mut offset = 0;
+    for segment in s.split_inclusive('\n') {
+        let without_newline = segment.trim_end_matches(|c| c == '\n' || c == '\r');
+        if without_newline.trim().is_empty() {
+            offset += segment.len();
+            continue;
+        }
+        break;
+    }
+
+    &s[offset..]
+}
+
 pub fn parse_template(raw: &str) -> Result<ParsedTemplate, SlashCommandError> {
-    let trimmed = raw.trim_start_matches('\u{FEFF}').trim_start();
-    if trimmed.is_empty() {
+    let no_bom = raw.strip_prefix('\u{FEFF}').unwrap_or(raw);
+    let frontmatter_check = strip_leading_blank_lines(no_bom);
+
+    if frontmatter_check.is_empty() {
         return Ok(ParsedTemplate {
             metadata: FrontmatterMetadata::default(),
-            body: String::new(),
+            body: raw.to_string(),
         });
     }
 
-    if !trimmed.starts_with("---") {
+    if !frontmatter_check.starts_with("---") {
         return Ok(ParsedTemplate {
             metadata: FrontmatterMetadata::default(),
-            body: trimmed.to_string(),
+            body: raw.to_string(),
         });
     }
 
     // Split frontmatter and body by locating the terminating delimiter.
-    let mut lines = trimmed.lines();
+    let mut lines = frontmatter_check.lines();
     let _ = lines.next(); // skip the initial --- line
     let mut frontmatter_lines: Vec<&str> = Vec::new();
     let mut body_lines: Vec<&str> = Vec::new();
@@ -62,9 +78,11 @@ pub fn parse_template(raw: &str) -> Result<ParsedTemplate, SlashCommandError> {
 
     let frontmatter_src = frontmatter_lines.join("\n");
     let raw_meta = if frontmatter_src.trim().is_empty() {
-        Ok(RawFrontmatter::default())
+        RawFrontmatter::default()
     } else {
-        serde_yaml::from_str::<RawFrontmatter>(&frontmatter_src)
+        serde_yaml::from_str::<RawFrontmatter>(&frontmatter_src).map_err(|error| {
+            SlashCommandError::InvalidTemplate(format!("failed to parse frontmatter: {error}"))
+        })?
     };
 
     let body = if body_lines.is_empty() {
@@ -73,20 +91,17 @@ pub fn parse_template(raw: &str) -> Result<ParsedTemplate, SlashCommandError> {
         body_lines.join("\n")
     };
 
-    let metadata = match raw_meta {
-        Ok(raw_meta) => FrontmatterMetadata {
-            description: raw_meta.description.map(|s| s.trim().to_string()),
-            argument_hint: raw_meta.argument_hint.map(|s| s.trim().to_string()),
-            model: raw_meta.model.map(|s| s.trim().to_string()),
-            allowed_tools: raw_meta.allowed_tools.map(|tools| {
-                tools
-                    .into_iter()
-                    .map(|tool| tool.trim().to_string())
-                    .filter(|tool| !tool.is_empty())
-                    .collect()
-            }),
-        },
-        Err(_) => FrontmatterMetadata::default(),
+    let metadata = FrontmatterMetadata {
+        description: raw_meta.description.map(|s| s.trim().to_string()),
+        argument_hint: raw_meta.argument_hint.map(|s| s.trim().to_string()),
+        model: raw_meta.model.map(|s| s.trim().to_string()),
+        allowed_tools: raw_meta.allowed_tools.map(|tools| {
+            tools
+                .into_iter()
+                .map(|tool| tool.trim().to_string())
+                .filter(|tool| !tool.is_empty())
+                .collect()
+        }),
     };
 
     Ok(ParsedTemplate { metadata, body })
