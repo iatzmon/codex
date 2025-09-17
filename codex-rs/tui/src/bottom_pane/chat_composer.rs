@@ -438,9 +438,13 @@ impl ChatComposer {
                 ..
             } => {
                 if let Some(sel) = popup.selected_item() {
-                    // Clear textarea so no residual text remains.
-                    self.textarea.set_text("");
-                    // Capture any needed data from popup before clearing it.
+                    let first_line = self
+                        .textarea
+                        .text()
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .to_string();
                     let prompt_content = match sel {
                         CommandItem::UserPrompt(idx) => {
                             popup.prompt_content(idx).map(|s| s.to_string())
@@ -452,18 +456,12 @@ impl ChatComposer {
                         CommandItem::CustomCommand(idx) => popup.custom_command(idx).cloned(),
                         _ => None,
                     };
-                    let first_line = self
-                        .textarea
-                        .text()
-                        .lines()
-                        .next()
-                        .unwrap_or("")
-                        .to_string();
                     // Hide popup since an action has been dispatched.
                     self.active_popup = ActivePopup::None;
 
                     match sel {
                         CommandItem::Builtin(cmd) => {
+                            self.textarea.set_text("");
                             let arguments = Self::extract_builtin_arguments(&first_line);
                             return (
                                 InputResult::Command {
@@ -474,6 +472,7 @@ impl ChatComposer {
                             );
                         }
                         CommandItem::UserPrompt(_) => {
+                            self.textarea.set_text("");
                             if let Some(contents) = prompt_content {
                                 return (InputResult::Submitted(contents), true);
                             }
@@ -482,6 +481,14 @@ impl ChatComposer {
                         #[cfg(feature = "slash_commands")]
                         CommandItem::CustomCommand(_) => {
                             if let Some(command) = selected_custom_command {
+                                let trimmed = first_line.trim_start();
+                                let command_prefix = format!("/{}", command.full_name);
+                                if trimmed.starts_with(&command_prefix)
+                                    && trimmed.len() > command_prefix.len()
+                                {
+                                    // Arguments already typed; submit as normal input.
+                                    return self.handle_key_event_without_popup(key_event);
+                                }
                                 self.textarea.set_text(&format!("/{} ", command.full_name));
                                 let end = self.textarea.text().len();
                                 self.textarea.set_cursor(end);
