@@ -205,6 +205,8 @@ async fn helpers_are_available_and_do_not_panic() {
         initial_images: Vec::new(),
         enhanced_keys_supported: false,
         auth_manager,
+        #[cfg(feature = "slash_commands")]
+        custom_slash_commands: Vec::new(),
     };
     let mut w = ChatWidget::new(init, conversation_manager);
     // Basic construction sanity.
@@ -228,6 +230,8 @@ fn make_chatwidget_manual() -> (
         enhanced_keys_supported: false,
         placeholder_text: "Ask Codex to do anything".to_string(),
         disable_paste_burst: false,
+        #[cfg(feature = "slash_commands")]
+        custom_slash_commands: Vec::new(),
     });
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test"));
     let widget = ChatWidget {
@@ -240,6 +244,8 @@ fn make_chatwidget_manual() -> (
         session_header: SessionHeader::new(cfg.model.clone()),
         initial_user_message: None,
         token_info: None,
+        #[cfg(feature = "slash_commands")]
+        custom_slash_commands: Vec::new(),
         stream: StreamController::new(cfg),
         running_commands: HashMap::new(),
         task_complete_pending: false,
@@ -630,7 +636,7 @@ fn disabled_slash_command_while_task_running_snapshot() {
     chat.bottom_pane.set_task_running(true);
 
     // Dispatch a command that is unavailable while a task runs (e.g., /model)
-    chat.dispatch_command(SlashCommand::Model);
+    chat.dispatch_command(SlashCommand::Model, "");
 
     // Drain history and snapshot the rendered error line(s)
     let cells = drain_insert_history(&mut rx);

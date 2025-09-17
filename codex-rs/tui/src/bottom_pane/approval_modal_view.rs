@@ -101,6 +101,8 @@ mod tests {
             enhanced_keys_supported: false,
             placeholder_text: "Ask Codex to do anything".to_string(),
             disable_paste_burst: false,
+            #[cfg(feature = "slash_commands")]
+            custom_slash_commands: Vec::new(),
         });
         assert_eq!(CancellationEvent::Handled, view.on_ctrl_c(&mut pane));
         assert!(view.queue.is_empty());

@@ -5,6 +5,10 @@ use crate::markdown::append_markdown;
 use crate::render::line_utils::line_to_static;
 use crate::render::line_utils::prefix_lines;
 use crate::render::line_utils::push_owned_lines;
+#[cfg(feature = "slash_commands")]
+use crate::slash_command::CustomSlashCommand;
+#[cfg(feature = "slash_commands")]
+use crate::slash_command::SlashCommand;
 use crate::text_formatting::format_and_truncate_tool_result;
 use crate::ui_consts::LIVE_PREFIX_COLS;
 use crate::wrapping::RtOptions;
@@ -50,6 +54,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
+#[cfg(feature = "slash_commands")]
+use strum::IntoEnumIterator;
 use tracing::error;
 use unicode_width::UnicodeWidthStr;
 
@@ -607,6 +613,8 @@ pub(crate) fn new_session_info(
     config: &Config,
     event: SessionConfiguredEvent,
     is_first_event: bool,
+    #[cfg(feature = "slash_commands")]
+    custom_commands: &[crate::slash_command::CustomSlashCommand],
 ) -> CompositeHistoryCell {
     let SessionConfiguredEvent {
         model,
@@ -627,7 +635,8 @@ pub(crate) fn new_session_info(
         );
 
         // Help lines below the header (new copy and list)
-        let help_lines: Vec<Line<'static>> = vec![
+        #[allow(unused_mut)]
+        let mut help_lines: Vec<Line<'static>> = vec![
             "  To get started, describe a task or try one of these commands:"
                 .dim()
                 .into(),
@@ -654,6 +663,46 @@ pub(crate) fn new_session_info(
             ]),
         ];
 
+        #[cfg(feature = "slash_commands")]
+        {
+            let mut entries = Vec::new();
+            for command in custom_commands.iter().take(3) {
+                let mut details = vec![format!("[{}]", command.scope_label())];
+                if let Some(description) = &command.description
+                    && !description.is_empty()
+                {
+                    details.push(description.clone());
+                }
+                if let Some(hint) = &command.argument_hint
+                    && !hint.is_empty()
+                {
+                    details.push(format!("arguments: {hint}"));
+                }
+                let detail_line = details.join(" — ");
+                entries.push(
+                    vec![
+                        "  ".into(),
+                        format!("/{}", command.full_name).into(),
+                        " ".into(),
+                        detail_line.dim(),
+                    ]
+                    .into(),
+                );
+            }
+            if !entries.is_empty() {
+                help_lines.push(Line::from(""));
+                help_lines.push("  Custom slash commands:".dim().into());
+                help_lines.extend(entries);
+                if custom_commands.len() > 3 {
+                    help_lines.push(
+                        format!("  ...and {} more", custom_commands.len() - 3)
+                            .dim()
+                            .into(),
+                    );
+                }
+            }
+        }
+
         CompositeHistoryCell {
             parts: vec![
                 Box::new(header),
@@ -672,6 +721,58 @@ pub(crate) fn new_session_info(
             parts: vec![Box::new(PlainHistoryCell { lines })],
         }
     }
+}
+
+#[cfg(feature = "slash_commands")]
+pub(crate) fn new_slash_command_help(custom_commands: &[CustomSlashCommand]) -> PlainHistoryCell {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from("Slash commands overview".bold()));
+    lines.push("".into());
+    lines.push("Built-in commands:".dim().into());
+    for command in SlashCommand::iter() {
+        let mut spans = vec!["  ".into(), format!("/{}", command.command()).into()];
+        let description = command.description();
+        if !description.is_empty() {
+            spans.push(" ".into());
+            spans.push(description.dim());
+        }
+        lines.push(Line::from(spans));
+    }
+
+    lines.push("".into());
+    if custom_commands.is_empty() {
+        lines.push("No custom slash commands discovered.".dim().into());
+    } else {
+        lines.push("Custom slash commands:".dim().into());
+        for command in custom_commands {
+            let mut details = vec![format!("[{}]", command.scope_label())];
+            if let Some(description) = &command.description
+                && !description.is_empty()
+            {
+                details.push(description.clone());
+            }
+            if let Some(hint) = &command.argument_hint
+                && !hint.is_empty()
+            {
+                details.push(format!("arguments: {hint}"));
+            }
+            let mut spans = vec!["  ".into(), format!("/{}", command.full_name).into()];
+            if !details.is_empty() {
+                spans.push(" ".into());
+                spans.push(details.join(" — ").dim());
+            }
+            lines.push(Line::from(spans));
+        }
+    }
+
+    lines.push("".into());
+    lines.push(
+        "Tip: run '/help reload' after editing command files."
+            .dim()
+            .into(),
+    );
+
+    PlainHistoryCell { lines }
 }
 
 pub(crate) fn new_user_prompt(message: String) -> UserHistoryCell {

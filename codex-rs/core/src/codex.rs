@@ -114,6 +114,12 @@ use crate::safety::SafetyCheck;
 use crate::safety::assess_command_safety;
 use crate::safety::assess_safety_for_untrusted_command;
 use crate::shell;
+#[cfg(feature = "slash_commands")]
+use crate::slash_commands::CommandInvocation;
+#[cfg(feature = "slash_commands")]
+use crate::slash_commands::InvocationError;
+#[cfg(feature = "slash_commands")]
+use crate::slash_commands::SlashCommandService;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use crate::unified_exec::UnifiedExecSessionManager;
 use crate::user_instructions::UserInstructions;
@@ -294,6 +300,8 @@ pub(crate) struct Session {
     /// sessions can be replayed or inspected later.
     rollout: Mutex<Option<RolloutRecorder>>,
     state: Mutex<State>,
+    #[cfg(feature = "slash_commands")]
+    slash_commands: Option<SlashCommandService>,
     codex_linux_sandbox_exe: Option<PathBuf>,
     user_shell: shell::Shell,
     show_raw_agent_reasoning: bool,
@@ -359,6 +367,64 @@ struct ConfigureSession {
     /// `ConfigureSession` operation so that the business-logic layer can
     /// operate deterministically.
     cwd: PathBuf,
+}
+
+#[cfg(feature = "slash_commands")]
+async fn handle_slash_command_turn(
+    sess: Arc<Session>,
+    base_context: Arc<TurnContext>,
+    config: Arc<Config>,
+    sub_id: String,
+    model_override: String,
+    items: Vec<InputItem>,
+) {
+    let provider = base_context.client.get_provider();
+    let auth_manager = base_context.client.get_auth_manager();
+    let model_family =
+        find_family_for_model(&model_override).unwrap_or_else(|| config.model_family.clone());
+
+    let mut per_turn_config = (*config).clone();
+    per_turn_config.model = model_override;
+    per_turn_config.model_family = model_family.clone();
+    if let Some(model_info) = get_model_info(&model_family) {
+        per_turn_config.model_context_window = Some(model_info.context_window);
+    }
+
+    let client = ModelClient::new(
+        Arc::new(per_turn_config),
+        auth_manager,
+        provider,
+        base_context.client.get_reasoning_effort(),
+        base_context.client.get_reasoning_summary(),
+        sess.conversation_id,
+    );
+
+    let tools_config = ToolsConfig::new(&ToolsConfigParams {
+        model_family: &model_family,
+        approval_policy: base_context.approval_policy,
+        sandbox_policy: base_context.sandbox_policy.clone(),
+        include_plan_tool: config.include_plan_tool,
+        include_apply_patch_tool: config.include_apply_patch_tool,
+        include_web_search_request: config.tools_web_search_request,
+        use_streamable_shell_tool: config.use_experimental_streamable_shell_tool,
+        include_view_image_tool: config.include_view_image_tool,
+        experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
+    });
+
+    let turn_context = TurnContext {
+        client,
+        tools_config,
+        user_instructions: base_context.user_instructions.clone(),
+        base_instructions: base_context.base_instructions.clone(),
+        approval_policy: base_context.approval_policy,
+        sandbox_policy: base_context.sandbox_policy.clone(),
+        shell_environment_policy: base_context.shell_environment_policy.clone(),
+        cwd: base_context.cwd.clone(),
+        is_review_mode: base_context.is_review_mode,
+    };
+
+    let task = AgentTask::spawn(sess.clone(), Arc::new(turn_context), sub_id, items);
+    sess.set_task(task);
 }
 
 impl Session {
@@ -430,6 +496,20 @@ impl Session {
             ..Default::default()
         };
 
+        #[cfg(feature = "slash_commands")]
+        let slash_commands = match SlashCommandService::new(config.as_ref()).await {
+            Ok(service) => Some(service),
+            Err(err) => {
+                let message = format!("Failed to load slash commands: {err}");
+                error!("{message}");
+                post_session_configured_error_events.push(Event {
+                    id: INITIAL_SUBMIT_ID.to_owned(),
+                    msg: EventMsg::Error(ErrorEvent { message }),
+                });
+                None
+            }
+        };
+
         // Handle MCP manager result and record any startup failures.
         let (mcp_connection_manager, failed_clients) = match mcp_res {
             Ok((mgr, failures)) => (mgr, failures),
@@ -495,6 +575,8 @@ impl Session {
             unified_exec_manager: UnifiedExecSessionManager::default(),
             notify,
             state: Mutex::new(state),
+            #[cfg(feature = "slash_commands")]
+            slash_commands,
             rollout: Mutex::new(Some(rollout_recorder)),
             codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),
             user_shell: default_shell,
@@ -1189,6 +1271,37 @@ async fn submission_loop(
             Op::Interrupt => {
                 sess.interrupt_task();
             }
+            #[cfg(feature = "slash_commands")]
+            Op::ReloadSlashCommands => {
+                if let Some(service) = sess.slash_commands.as_ref() {
+                    match service.reload().await {
+                        Ok(count) => {
+                            let message = match count {
+                                0 => "Reloaded 0 slash commands".to_string(),
+                                1 => "Reloaded 1 slash command".to_string(),
+                                _ => format!("Reloaded {count} slash commands"),
+                            };
+                            sess.notify_background_event(&sub.id, message).await;
+                        }
+                        Err(err) => {
+                            let message = format!("Failed to reload slash commands: {err}");
+                            let event = Event {
+                                id: sub.id.clone(),
+                                msg: EventMsg::Error(ErrorEvent { message }),
+                            };
+                            sess.send_event(event).await;
+                        }
+                    }
+                } else {
+                    let event = Event {
+                        id: sub.id.clone(),
+                        msg: EventMsg::Error(ErrorEvent {
+                            message: "Slash commands are not enabled for this session.".into(),
+                        }),
+                    };
+                    sess.send_event(event).await;
+                }
+            }
             Op::OverrideTurnContext {
                 cwd,
                 approval_policy,
@@ -1279,8 +1392,119 @@ async fn submission_loop(
                 }
             }
             Op::UserInput { items } => {
+                let mut items = items;
+                #[cfg(feature = "slash_commands")]
+                let mut slash_model_override: Option<String> = None;
+                #[cfg(feature = "slash_commands")]
+                {
+                    if let Some(service) = sess.slash_commands.as_ref()
+                        && let Some(command_text) = items.iter().find_map(|item| {
+                            if let InputItem::Text { text } = item {
+                                Some(text.clone())
+                            } else {
+                                None
+                            }
+                        })
+                    {
+                        match service.resolve(&command_text).await {
+                            Ok(invocation) => {
+                                fn rebuild_items(
+                                    original: &[InputItem],
+                                    invocation: &CommandInvocation,
+                                ) -> Vec<InputItem> {
+                                    let mut replaced = false;
+                                    let mut out = Vec::with_capacity(original.len().max(1));
+                                    for item in original {
+                                        match item {
+                                            InputItem::Text { .. } if !replaced => {
+                                                out.push(InputItem::Text {
+                                                    text: invocation.rendered_body.clone(),
+                                                });
+                                                replaced = true;
+                                            }
+                                            InputItem::Text { text } => {
+                                                out.push(InputItem::Text { text: text.clone() });
+                                            }
+                                            InputItem::Image { image_url } => {
+                                                out.push(InputItem::Image {
+                                                    image_url: image_url.clone(),
+                                                });
+                                            }
+                                            InputItem::LocalImage { path } => {
+                                                out.push(InputItem::LocalImage {
+                                                    path: path.clone(),
+                                                });
+                                            }
+                                            _ => out.push(item.clone()),
+                                        }
+                                    }
+                                    if !replaced {
+                                        out.insert(
+                                            0,
+                                            InputItem::Text {
+                                                text: invocation.rendered_body.clone(),
+                                            },
+                                        );
+                                    }
+                                    out
+                                }
+
+                                slash_model_override = invocation.command.metadata.model.clone();
+                                items = rebuild_items(&items, &invocation);
+                            }
+                            Err(InvocationError::NotCommand) => {}
+                            Err(InvocationError::NotFound { name, suggestions }) => {
+                                let mut message = format!("Unknown slash command: /{name}");
+                                if !suggestions.is_empty() {
+                                    message.push_str(". Did you mean: ");
+                                    message.push_str(&suggestions.join(", "));
+                                }
+                                let event = Event {
+                                    id: sub.id.clone(),
+                                    msg: EventMsg::Error(ErrorEvent { message }),
+                                };
+                                sess.send_event(event).await;
+                                continue;
+                            }
+                            Err(InvocationError::Ambiguous { matches, .. }) => {
+                                let message = format!(
+                                    "Slash command is ambiguous; try one of: {}",
+                                    matches.join(", ")
+                                );
+                                let event = Event {
+                                    id: sub.id.clone(),
+                                    msg: EventMsg::Error(ErrorEvent { message }),
+                                };
+                                sess.send_event(event).await;
+                                continue;
+                            }
+                            Err(InvocationError::Interpolation(message)) => {
+                                let event = Event {
+                                    id: sub.id.clone(),
+                                    msg: EventMsg::Error(ErrorEvent { message }),
+                                };
+                                sess.send_event(event).await;
+                                continue;
+                            }
+                        }
+                    }
+                }
+
                 // attempt to inject input into current task
                 if let Err(items) = sess.inject_input(items) {
+                    #[cfg(feature = "slash_commands")]
+                    if let Some(model) = slash_model_override {
+                        handle_slash_command_turn(
+                            sess.clone(),
+                            Arc::clone(&turn_context),
+                            config.clone(),
+                            sub.id.clone(),
+                            model,
+                            items,
+                        )
+                        .await;
+                        continue;
+                    }
                     // no current task, spawn a new one
                     let task =
                         AgentTask::spawn(sess.clone(), Arc::clone(&turn_context), sub.id, items);
@@ -3566,6 +3790,8 @@ mod tests {
             codex_linux_sandbox_exe: None,
             user_shell: shell::Shell::Unknown,
             show_raw_agent_reasoning: config.show_raw_agent_reasoning,
+            #[cfg(feature = "slash_commands")]
+            slash_commands: None,
         };
         (session, turn_context)
     }
