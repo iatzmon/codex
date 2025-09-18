@@ -1,15 +1,20 @@
-//! Plan Mode module skeleton. Implementation will follow once tests enforce behavior.
+//! Core data structures used to power Plan Mode.
 
-pub mod artifact;
-pub mod capability;
-pub mod config;
-pub mod entry;
-pub mod session;
-pub mod telemetry;
+mod artifact;
+mod capability;
+mod config;
+mod entry;
+mod session;
+mod telemetry;
 
 pub use artifact::PlanArtifact;
+pub use artifact::PlanArtifactMetadata;
 pub use capability::ToolCapability;
+pub use capability::ToolMode;
 pub use config::PlanModeConfig;
 pub use entry::PlanEntry;
+pub use entry::PlanEntryType;
 pub use session::PlanModeSession;
+pub use session::PlanModeState;
+pub use telemetry::PlanModeEvent;
 pub use telemetry::PlanTelemetry;
