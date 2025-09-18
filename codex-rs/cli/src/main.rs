@@ -335,6 +335,9 @@ fn merge_resume_cli_flags(interactive: &mut TuiCli, resume_cli: TuiCli) {
     if let Some(approval) = resume_cli.approval_policy {
         interactive.approval_policy = Some(approval);
     }
+    if resume_cli.plan {
+        interactive.plan = true;
+    }
     if resume_cli.full_auto {
         interactive.full_auto = true;
     }

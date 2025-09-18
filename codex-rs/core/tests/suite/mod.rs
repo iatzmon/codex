@@ -9,6 +9,7 @@ mod exec_stream_events;
 mod fork_conversation;
 mod live_cli;
 mod model_overrides;
+mod plan_mode;
 mod prompt_caching;
 mod review;
 mod rollout_list_find;
