@@ -180,6 +180,20 @@ Alternatively, you can have the model run until it is done, and never ask to run
 approval_policy = "never"
 ```
 
+## plan_mode
+
+Plan Mode settings live in the `[plan_mode]` table. These control whether Codex automatically enters planning at startup and which tools remain available while planning:
+
+```toml
+[plan_mode]
+plan_enabled = false                 # Start every session in Plan Mode
+allowed_read_only_tools = ["fs.read"]  # MCP/tool allowlist when planning
+planning_model = "gpt-4o"             # Optional planner model override
+apply_requires_confirmation = true    # Force `/apply-plan` to include a mode
+```
+
+Allowed tool names should match the qualified tool identifier (for example `server__tool`) or the plain tool name when the context is unambiguous. Any tool not listed is blocked while planning, and attempts to run it are captured as plan entries. Entries may include glob patterns (`*`, `?`, character classes) to match groups of tools (e.g. `n8n-mcp__list_*`), and shell allowances can be specified with the `shell(...)` helper (e.g. `shell(cat *)` allows `cat` commands while planning). Codex also enables a small set of read-only shell helpers by default so you can always inspect the workspace: `shell(bash -lc cat *)`, `shell(bash -lc find *)`, `shell(bash -lc grep *)`, `shell(bash -lc ls *)`, `shell(bash -lc tree *)`, `shell(bash -lc head *)`, `shell(bash -lc tail *)`, `shell(bash -lc stat *)`, `shell(bash -lc pwd *)`, `shell(bash -lc pwd)`, `shell(bash -lc git status)`, and `shell(bash -lc git diff --stat)`. Custom entries you add extend this list rather than replacing it.
+
 ## profiles
 
 A _profile_ is a collection of configuration values that can be set together. Multiple profiles can be defined in `config.toml` and you can specify the one you

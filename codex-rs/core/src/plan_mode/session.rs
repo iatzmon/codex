@@ -5,11 +5,14 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::protocol::AskForApproval;
+use codex_protocol::plan_mode::PlanArtifactPayload;
+use codex_protocol::plan_mode::PlanModeSessionPayload;
 
 use super::PlanArtifact;
 use super::PlanArtifactMetadata;
 use super::PlanEntry;
 use super::PlanEntryType;
+use super::PlanModeAllowList;
 use super::PlanModeConfig;
 use super::PlanModeEvent;
 use super::PlanTelemetry;
@@ -17,15 +20,19 @@ use super::ToolCapability;
 use super::ToolMode;
 
 /// High-level state of a session that is currently operating in Plan Mode.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanModeSession {
     pub session_id: Uuid,
     pub entered_from: AskForApproval,
     pub state: PlanModeState,
-    pub allowed_tools: Vec<ToolCapability>,
+    pub allowed_tools: Vec<String>,
     pub plan_artifact: PlanArtifact,
     pub entered_at: DateTime<Utc>,
     pub pending_exit: Option<AskForApproval>,
+    #[serde(skip, default)]
+    allow_list: PlanModeAllowList,
+    #[serde(skip, default)]
+    fallback_tool_ids: Vec<String>,
 }
 
 impl PlanModeSession {
@@ -37,8 +44,27 @@ impl PlanModeSession {
         entered_from: AskForApproval,
         tool_capabilities: Vec<ToolCapability>,
         config: &PlanModeConfig,
+        network_enabled: bool,
     ) -> Self {
-        let allowed_tools = filter_allowed_tools(tool_capabilities, config);
+        let allow_list = config.allow_list();
+        let fallback_tool_ids: Vec<String> = tool_capabilities
+            .into_iter()
+            .filter(|capability| capability.mode == ToolMode::ReadOnly)
+            .filter(|capability| {
+                if !capability.requires_network {
+                    return true;
+                }
+                network_enabled
+                    && allow_list.has_tool_rules()
+                    && allow_list.matches_tool(&capability.id)
+            })
+            .map(|capability| capability.id)
+            .collect();
+
+        let mut allowed_tools = allow_list.raw_entries().to_vec();
+        if !allow_list.has_tool_rules() {
+            allowed_tools.extend(fallback_tool_ids.clone());
+        }
 
         Self {
             session_id,
@@ -48,6 +74,8 @@ impl PlanModeSession {
             plan_artifact: PlanArtifact::default(),
             entered_at: Utc::now(),
             pending_exit: None,
+            allow_list,
+            fallback_tool_ids,
         }
     }
 
@@ -95,10 +123,21 @@ impl PlanModeSession {
         matches!(self.state, PlanModeState::Active)
     }
 
-    /// Determine whether Plan Mode can only expose read-only capabilities with
-    /// the current network policy.
+    /// Raw allow-list entries for display purposes.
     pub fn allowed_tool_ids(&self) -> impl Iterator<Item = &str> {
-        self.allowed_tools.iter().map(|cap| cap.id.as_str())
+        self.allowed_tools.iter().map(|entry| entry.as_str())
+    }
+
+    pub fn is_tool_allowed(&self, tool_id: &str) -> bool {
+        if self.allow_list.has_tool_rules() {
+            self.allow_list.matches_tool(tool_id)
+        } else {
+            self.fallback_tool_ids.iter().any(|id| id == tool_id)
+        }
+    }
+
+    pub fn is_shell_allowed(&self, command: &str) -> bool {
+        self.allow_list.matches_shell_command(command)
     }
 
     /// Snapshot telemetry for entering Plan Mode.
@@ -110,40 +149,19 @@ impl PlanModeSession {
         )
     }
 
+    pub fn to_payload(&self) -> PlanModeSessionPayload {
+        PlanModeSessionPayload {
+            session_id: self.session_id,
+            entered_from: self.entered_from,
+            allowed_tools: self.allowed_tools.clone(),
+            plan_artifact: PlanArtifactPayload::from(&self.plan_artifact),
+        }
+    }
+
     #[allow(dead_code)]
     pub fn plan_artifact(&self) -> &PlanArtifact {
         &self.plan_artifact
     }
-}
-
-fn filter_allowed_tools(
-    capabilities: Vec<ToolCapability>,
-    config: &PlanModeConfig,
-) -> Vec<ToolCapability> {
-    let has_explicit_allow_list = !config.allowed_read_only_tools.is_empty();
-    capabilities
-        .into_iter()
-        .filter(|capability| capability.mode == ToolMode::ReadOnly)
-        .filter(|capability| {
-            if !capability.requires_network {
-                return true;
-            }
-            has_explicit_allow_list
-                && config
-                    .allowed_read_only_tools
-                    .iter()
-                    .any(|allowed| allowed == &capability.id)
-        })
-        .filter(|capability| {
-            if !has_explicit_allow_list {
-                return true;
-            }
-            config
-                .allowed_read_only_tools
-                .iter()
-                .any(|allowed| allowed == &capability.id)
-        })
-        .collect()
 }
 
 /// Lifecycle states for the Plan Mode session.
