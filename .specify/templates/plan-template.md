@@ -1,8 +1,8 @@
 
-# Implementation Plan: Custom Slash Commands for Codex CLI
+# Implementation Plan: [FEATURE]
 
-**Branch**: `001-here-is-a` | **Date**: 2025-01-16 | **Spec**: [spec.md](./spec.md)
-**Input**: Feature specification from `/home/iatzmon/workspace/codex/specs/001-here-is-a/spec.md`
+**Branch**: `[###-feature-name]` | **Date**: [DATE] | **Spec**: [link]
+**Input**: Feature specification from `/specs/[###-feature-name]/spec.md`
 
 ## Execution Flow (/plan command scope)
 ```
@@ -18,7 +18,7 @@
    → Update Progress Tracking: Initial Constitution Check
 5. Execute Phase 0 → research.md
    → If NEEDS CLARIFICATION remain: ERROR "Resolve unknowns"
-6. Execute Phase 1 → contracts, data-model.md, quickstart.md, agent-specific template file (e.g., `CLAUDE.md` for Claude Code, `.github/copilot-instructions.md` for GitHub Copilot, or `GEMINI.md` for Gemini CLI).
+6. Execute Phase 1 → contracts, data-model.md, quickstart.md, agent-specific template file (e.g., `CLAUDE.md` for Claude Code, `.github/copilot-instructions.md` for GitHub Copilot, `GEMINI.md` for Gemini CLI, `QWEN.md` for Qwen Code or `AGENTS.md` for opencode).
 7. Re-evaluate Constitution Check section
    → If new violations: Refactor design, return to Phase 1
    → Update Progress Tracking: Post-Design Constitution Check
@@ -31,53 +31,27 @@
 - Phase 3-4: Implementation execution (manual or via tools)
 
 ## Summary
-Add custom slash commands to Codex CLI that read Markdown templates from `.codex/commands` directories, support argument interpolation, model override, and namespacing - implemented as a surgical extension with minimal codebase intervention for upstream merge compatibility.
+[Extract from feature spec: primary requirement + technical approach from research]
 
 ## Technical Context
-**Language/Version**: Rust 1.75+ (existing codebase standard)
-**Primary Dependencies**: serde (YAML/JSON), tokio (async), clap (CLI), ratatui (TUI), existing codex-core crates
-**Storage**: File system only (.codex/commands directories, in-memory command registry cache)
-**Testing**: cargo test, cargo insta (snapshot testing for TUI), existing test patterns from codex-rs
-**Target Platform**: Cross-platform (macOS, Linux, Windows/WSL2) - same as existing Codex CLI
-**Project Type**: Single crate extension (new codex-slash-commands crate in existing workspace)
-**Performance Goals**: O(1) command lookup, O(n) argument interpolation, minimal REPL startup impact
-**Constraints**: No network access, no shell execution, no file inclusion, upstream merge compatibility, feature-flagged
-**Scale/Scope**: Hundreds of custom commands per user/project, nested namespaces up to 5 levels deep
-
-**Implementation Strategy**: Our goal is to implement this surgically as an extension of the codebase with minimal intervention into existing code as this is a fork and we'd like to be able to merge from upstream easily. We should maintain the tech stack and convention already in place.
+**Language/Version**: [e.g., Python 3.11, Swift 5.9, Rust 1.75 or NEEDS CLARIFICATION]  
+**Primary Dependencies**: [e.g., FastAPI, UIKit, LLVM or NEEDS CLARIFICATION]  
+**Storage**: [if applicable, e.g., PostgreSQL, CoreData, files or N/A]  
+**Testing**: [e.g., pytest, XCTest, cargo test or NEEDS CLARIFICATION]  
+**Target Platform**: [e.g., Linux server, iOS 15+, WASM or NEEDS CLARIFICATION]
+**Project Type**: [single/web/mobile - determines source structure]  
+**Performance Goals**: [domain-specific, e.g., 1000 req/s, 10k lines/sec, 60 fps or NEEDS CLARIFICATION]  
+**Constraints**: [domain-specific, e.g., <200ms p95, <100MB memory, offline-capable or NEEDS CLARIFICATION]  
+**Scale/Scope**: [domain-specific, e.g., 10k users, 1M LOC, 50 screens or NEEDS CLARIFICATION]
 
 ## Constitution Check
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-### I. Security-First Architecture ✅
-- **PASS**: Feature explicitly excludes shell execution and file inclusion
-- **PASS**: Commands are read-only template operations with no network access
-- **PASS**: No modification of CODEX_SANDBOX_* environment variables
-- **PASS**: Default read-only with explicit escalation model maintained
-
-### II. Library-Centric Design ✅
-- **PASS**: New `codex-slash-commands` crate follows naming convention
-- **PASS**: Core logic isolated in library, CLI integration minimal
-- **PASS**: Self-contained with clear single purpose
-- **PASS**: Independent testability maintained
-
-### III. Test-Driven Quality ✅
-- **PASS**: Will implement comprehensive test coverage
-- **PASS**: Snapshot testing for TUI changes using cargo insta
-- **PASS**: Tests fail first, implementation follows
-- **PASS**: Project-specific tests before workspace-wide
-
-### IV. Rust Standards & Tooling ✅
-- **PASS**: Follows existing cargo fmt/clippy standards
-- **PASS**: Format strings with inline variables
-- **PASS**: Uses `just fmt` and `just fix` workflow
-- **PASS**: Maintains existing tooling patterns
-
-### V. User Experience Excellence ✅
-- **PASS**: Concise, friendly command interaction
-- **PASS**: Rich configuration via environment variables
-- **PASS**: Maintains existing REPL user experience
-- **PASS**: Clear help and autocomplete support
+- Plan MUST keep CLI code in `codex-cli` and Rust engine changes in `codex-rs`, with paired tests for any boundary crossings.
+- Plan MUST use the official templates for spec/plan/tasks, remove unused sections, and log any justified complexity inline.
+- Plan MUST produce contract/integration/unit tests that will fail before implementation and list required `cargo`/`pnpm` validation runs.
+- Plan MUST respect `just fmt`/`just fix` workflows, Ratatui `Stylize` usage, and avoid unnecessary layers or new crates.
+- Plan MUST capture logging expectations, semantic version impact, and documentation or PR evidence reviewers will verify.
 
 ## Project Structure
 
@@ -129,7 +103,7 @@ ios/ or android/
 └── [platform-specific structure]
 ```
 
-**Structure Decision**: Option 1 (Single project) - Adding new crate to existing Rust workspace
+**Structure Decision**: [DEFAULT to Option 1 unless Technical Context indicates web/mobile app]
 
 ## Phase 0: Outline & Research
 1. **Extract unknowns from Technical Context** above:
@@ -175,7 +149,7 @@ ios/ or android/
    - Quickstart test = story validation steps
 
 5. **Update agent file incrementally** (O(1) operation):
-   - Run `.specify/scripts/bash/update-agent-context.sh claude` for your AI assistant
+   - Run `.specify/scripts/bash/update-agent-context.sh codex` for your AI assistant
    - If exists: Add only NEW tech from current plan
    - Preserve manual additions between markers
    - Update recent changes (keep last 3)
@@ -190,28 +164,17 @@ ios/ or android/
 **Task Generation Strategy**:
 - Load `.specify/templates/tasks-template.md` as base
 - Generate tasks from Phase 1 design docs (contracts, data model, quickstart)
-- Each API function in contracts → unit test task [P]
-- Each entity in data model → struct/enum definition task [P]
-- Each user scenario → integration test task
-- TUI integration tasks for help system and completion
-- REPL integration task for command interception
-- Implementation tasks to make failing tests pass
+- Each contract → contract test task [P]
+- Each entity → model creation task [P] 
+- Each user story → integration test task
+- Implementation tasks to make tests pass
 
 **Ordering Strategy**:
-- TDD order: Tests before implementation
-- Foundation first: Core data types, then parsing, then registry, then integration
-- Independent crates can be developed in parallel [P]
-- TUI/REPL integration comes after core functionality
-- Feature flag setup early to enable conditional compilation
+- TDD order: Tests before implementation 
+- Dependency order: Models before services before UI
+- Mark [P] for parallel execution (independent files)
 
-**Specific Task Categories**:
-1. **Setup Tasks**: Crate creation, feature flag configuration, dependency setup
-2. **Core Library Tasks [P]**: Data models, parsing logic, interpolation engine, registry
-3. **Test Tasks [P]**: Unit tests for each core component, security constraint tests
-4. **Integration Tasks**: REPL hook, TUI help extension, model override integration
-5. **Validation Tasks**: End-to-end testing, quickstart validation, error handling
-
-**Estimated Output**: 28-32 numbered, ordered tasks in tasks.md
+**Estimated Output**: 25-30 numbered, ordered tasks in tasks.md
 
 **IMPORTANT**: This phase is executed by the /tasks command, NOT by /plan
 
@@ -235,18 +198,18 @@ ios/ or android/
 *This checklist is updated during execution flow*
 
 **Phase Status**:
-- [x] Phase 0: Research complete (/plan command)
-- [x] Phase 1: Design complete (/plan command)
-- [x] Phase 2: Task planning complete (/plan command - describe approach only)
+- [ ] Phase 0: Research complete (/plan command)
+- [ ] Phase 1: Design complete (/plan command)
+- [ ] Phase 2: Task planning complete (/plan command - describe approach only)
 - [ ] Phase 3: Tasks generated (/tasks command)
 - [ ] Phase 4: Implementation complete
 - [ ] Phase 5: Validation passed
 
 **Gate Status**:
-- [x] Initial Constitution Check: PASS
-- [x] Post-Design Constitution Check: PASS
-- [x] All NEEDS CLARIFICATION resolved
-- [x] Complexity deviations documented (none required)
+- [ ] Initial Constitution Check: PASS
+- [ ] Post-Design Constitution Check: PASS
+- [ ] All NEEDS CLARIFICATION resolved
+- [ ] Complexity deviations documented
 
 ---
 *Based on Constitution v3.0.0 - See `/memory/constitution.md`*
