@@ -39,6 +39,18 @@ pub struct PlanArtifactPayload {
     pub alternatives: Vec<String>,
     pub rollback: Vec<String>,
     pub success_criteria: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<PlanArtifactMetadataPayload>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct PlanArtifactMetadataPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

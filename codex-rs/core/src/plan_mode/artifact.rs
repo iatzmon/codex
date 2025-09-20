@@ -5,6 +5,7 @@ use serde::Serialize;
 
 use super::PlanEntry;
 use super::PlanEntryType;
+use codex_protocol::plan_mode::PlanArtifactMetadataPayload;
 use codex_protocol::plan_mode::PlanArtifactPayload;
 use codex_protocol::plan_mode::PlanEntryPayload;
 
@@ -95,10 +96,7 @@ impl PlanArtifact {
         if self.title.is_empty() {
             lines.push("Plan Ready for Execution".to_string());
         } else {
-            lines.push(format!(
-                "Plan Ready for Execution: {title}",
-                title = self.title
-            ));
+            lines.push(format!("Plan Ready for Execution: {}", self.title));
         }
         lines.push(String::new());
 
@@ -148,6 +146,22 @@ impl PlanArtifact {
 
 impl From<&PlanArtifact> for PlanArtifactPayload {
     fn from(artifact: &PlanArtifact) -> Self {
+        let metadata = if artifact.metadata.template.is_none()
+            && artifact.metadata.model.is_none()
+            && artifact.metadata.updated_at.is_none()
+        {
+            None
+        } else {
+            Some(PlanArtifactMetadataPayload {
+                template: artifact.metadata.template.clone(),
+                model: artifact.metadata.model.clone(),
+                updated_at: artifact
+                    .metadata
+                    .updated_at
+                    .map(|timestamp| timestamp.to_rfc3339()),
+            })
+        };
+
         Self {
             title: artifact.title.clone(),
             objectives: artifact.objectives.clone(),
@@ -162,6 +176,7 @@ impl From<&PlanArtifact> for PlanArtifactPayload {
             tests: artifact.tests.clone(),
             rollback: artifact.rollback.clone(),
             success_criteria: artifact.success_criteria.clone(),
+            metadata,
         }
     }
 }

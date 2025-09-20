@@ -38,7 +38,8 @@ paths:
                 properties:
                   previous_mode:
                     type: string
-                    description: Approval mode restored (e.g., on-request).
+                    description: Approval mode restored.
+                    enum: [on_request, on_failure, never, unless_trusted]
   /commands/apply-plan:
     post:
       summary: Exit Plan Mode and stage plan for execution.
@@ -48,7 +49,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [on-request, on-failure, never, unless-trusted]
+            enum: [on_request, on_failure, never, unless_trusted]
           description: Target approval mode override.
       responses:
         '200':
@@ -61,6 +62,7 @@ paths:
                   target_mode:
                     type: string
                     description: Approval mode that will govern subsequent actions.
+                    enum: [on_request, on_failure, never, unless_trusted]
                   plan_entries:
                     type: integer
                     description: Number of plan entries injected into next action.
@@ -91,6 +93,7 @@ components:
         entered_from:
           type: string
           description: Approval policy active before Plan Mode.
+          enum: [on_request, on_failure, never, unless_trusted]
         allowed_tools:
           type: array
           items:
@@ -166,14 +169,30 @@ components:
           type: array
           items:
             type: string
+        metadata:
+          type: object
+          description: Optional template/model metadata for the plan artifact.
+          properties:
+            template:
+              type: string
+            model:
+              type: string
+            updated_at:
+              type: string
+              format: date-time
+          additionalProperties: false
     PlanEntry:
       type: object
+      required: [sequence, entry_type, summary, created_at]
       properties:
         sequence:
           type: integer
+          format: int32
+          minimum: 0
+          maximum: 65535
         entry_type:
           type: string
-          enum: [Command, FileChange, Research, Decision]
+          enum: [command, file_change, research, decision]
         summary:
           type: string
         details:

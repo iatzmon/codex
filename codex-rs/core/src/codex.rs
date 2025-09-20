@@ -3330,6 +3330,18 @@ async fn handle_function_call(
                 }
             };
             let abs = turn_context.resolve_path(Some(args.path));
+            if let Err(message) = sess.validate_plan_mode_attachments(
+                &[InputItem::LocalImage { path: abs.clone() }],
+                turn_context,
+            ) {
+                return ResponseInputItem::FunctionCallOutput {
+                    call_id,
+                    output: FunctionCallOutputPayload {
+                        content: message,
+                        success: Some(false),
+                    },
+                };
+            }
             let output = match sess.inject_input(vec![InputItem::LocalImage { path: abs }]) {
                 Ok(()) => FunctionCallOutputPayload {
                     content: "attached local image path".to_string(),
