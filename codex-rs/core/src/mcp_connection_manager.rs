@@ -34,7 +34,7 @@ use crate::config_types::McpServerConfig;
 ///
 /// OpenAI requires tool names to conform to `^[a-zA-Z0-9_-]+$`, so we must
 /// choose a delimiter from this character set.
-const MCP_TOOL_NAME_DELIMITER: &str = "__";
+pub(crate) const MCP_TOOL_NAME_DELIMITER: &str = "__";
 const MAX_TOOL_NAME_LENGTH: usize = 64;
 
 /// Default timeout for initializing MCP server & initially listing tools.

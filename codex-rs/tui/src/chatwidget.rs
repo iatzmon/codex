@@ -37,6 +37,11 @@ use codex_core::protocol::UserMessageEvent;
 use codex_core::protocol::WebSearchBeginEvent;
 use codex_core::protocol::WebSearchEndEvent;
 use codex_protocol::parse_command::ParsedCommand;
+use codex_protocol::plan_mode::PlanModeActivatedEvent;
+use codex_protocol::plan_mode::PlanModeAppliedEvent;
+use codex_protocol::plan_mode::PlanModeExitedEvent;
+use codex_protocol::plan_mode::PlanModeSessionPayload;
+use codex_protocol::plan_mode::PlanModeUpdatedEvent;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -46,8 +51,13 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
+use ratatui::style::Stylize;
+use ratatui::text::Line;
+use ratatui::text::Span;
+use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 use ratatui::widgets::WidgetRef;
+use ratatui::widgets::Wrap;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::debug;
 
@@ -67,6 +77,7 @@ use crate::history_cell::CommandOutput;
 use crate::history_cell::ExecCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::PatchEventType;
+use crate::key_hint;
 #[cfg(feature = "slash_commands")]
 use crate::slash_command::CustomSlashCommand;
 use crate::slash_command::SlashCommand;
@@ -153,6 +164,10 @@ pub(crate) struct ChatWidget {
     queued_user_messages: VecDeque<UserMessage>,
     // Pending notification to show when unfocused on next Draw
     pending_notification: Option<Notification>,
+    plan_mode_session: Option<PlanModeSessionPayload>,
+    plan_mode_dialog_shown: bool,
+    plan_mode_dialog_pending: bool,
+    default_placeholder: String,
 }
 
 struct UserMessage {
@@ -302,6 +317,7 @@ impl ChatWidget {
         self.maybe_send_next_queued_input();
         // Emit a notification when the turn completes (suppressed if focused).
         self.notify(Notification::AgentTurnComplete);
+        self.maybe_prompt_plan_mode_dialog();
     }
 
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
@@ -355,8 +371,69 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    fn on_plan_mode_activated(&mut self, event: PlanModeActivatedEvent) {
+        self.plan_mode_session = Some(event.session);
+        self.plan_mode_dialog_shown = false;
+        self.plan_mode_dialog_pending = false;
+        self.refresh_plan_mode_placeholder();
+        self.request_redraw();
+    }
+
+    fn on_plan_mode_updated(&mut self, event: PlanModeUpdatedEvent) {
+        self.plan_mode_session = Some(event.session);
+        self.plan_mode_dialog_shown = false;
+        self.plan_mode_dialog_pending = true;
+        self.refresh_plan_mode_placeholder();
+        self.request_redraw();
+    }
+
+    fn on_plan_mode_exited(&mut self, _event: PlanModeExitedEvent) {
+        self.plan_mode_session = None;
+        self.plan_mode_dialog_shown = false;
+        self.plan_mode_dialog_pending = false;
+        self.refresh_plan_mode_placeholder();
+        self.request_redraw();
+    }
+
+    fn on_plan_mode_applied(&mut self, _event: PlanModeAppliedEvent) {
+        self.plan_mode_session = None;
+        self.plan_mode_dialog_shown = false;
+        self.plan_mode_dialog_pending = false;
+        self.refresh_plan_mode_placeholder();
+        self.request_redraw();
+    }
+
+    fn maybe_prompt_plan_mode_dialog(&mut self) {
+        if !self.plan_mode_dialog_pending || self.plan_mode_dialog_shown {
+            return;
+        }
+        let Some(session) = self.plan_mode_session.clone() else {
+            return;
+        };
+        let has_steps = !session.plan_artifact.steps.is_empty();
+        let has_next_actions = !session.plan_artifact.next_actions.is_empty();
+        if !(has_steps || has_next_actions) {
+            return;
+        }
+        self.bottom_pane
+            .push_approval_request(ApprovalRequest::PlanMode { session });
+        self.plan_mode_dialog_shown = true;
+        self.plan_mode_dialog_pending = false;
+        self.request_redraw();
+    }
+
+    pub(crate) fn on_plan_mode_refine_requested(&mut self) {
+        self.plan_mode_dialog_shown = false;
+        self.plan_mode_dialog_pending = false;
+        self.add_info_message(
+            "Provide more feedback to refine the plan.".to_string(),
+            None,
+        );
+    }
+
     fn on_plan_update(&mut self, update: codex_core::plan_tool::UpdatePlanArgs) {
         self.add_to_history(history_cell::new_plan_update(update));
+        self.plan_mode_dialog_pending = true;
     }
 
     fn on_exec_approval_request(&mut self, id: String, ev: ExecApprovalRequestEvent) {
@@ -669,10 +746,15 @@ impl ChatWidget {
             .active_exec_cell
             .as_ref()
             .map_or(0, |c| c.desired_height(area.width) + 1);
-        let active_height = active_desired.min(remaining);
-        // Note: no header area; remaining is not used beyond computing active height.
-
-        let header_height = 0u16;
+        let header_height = self.plan_mode_session.as_ref().map_or(0, |session| {
+            if session.allowed_tools.is_empty() {
+                1
+            } else {
+                2
+            }
+        });
+        let available_for_active = remaining.saturating_sub(header_height);
+        let active_height = active_desired.min(available_for_active);
 
         Layout::vertical([
             Constraint::Length(header_height),
@@ -699,22 +781,25 @@ impl ChatWidget {
         } = common;
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
+        let default_placeholder = placeholder.clone();
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: frame_requester.clone(),
+            app_event_tx: app_event_tx.clone(),
+            has_input_focus: true,
+            enhanced_keys_supported,
+            placeholder_text: placeholder,
+            disable_paste_burst: config.disable_paste_burst,
+            #[cfg(feature = "slash_commands")]
+            custom_slash_commands: custom_slash_commands.clone(),
+        });
+
         let codex_op_tx = spawn_agent(config.clone(), app_event_tx.clone(), conversation_manager);
 
         Self {
-            app_event_tx: app_event_tx.clone(),
-            frame_requester: frame_requester.clone(),
+            app_event_tx,
+            frame_requester,
             codex_op_tx,
-            bottom_pane: BottomPane::new(BottomPaneParams {
-                frame_requester,
-                app_event_tx,
-                has_input_focus: true,
-                enhanced_keys_supported,
-                placeholder_text: placeholder,
-                disable_paste_burst: config.disable_paste_burst,
-                #[cfg(feature = "slash_commands")]
-                custom_slash_commands: custom_slash_commands.clone(),
-            }),
+            bottom_pane,
             active_exec_cell: None,
             config: config.clone(),
             auth_manager,
@@ -737,6 +822,10 @@ impl ChatWidget {
             show_welcome_banner: true,
             suppress_session_configured_redraw: false,
             pending_notification: None,
+            plan_mode_session: None,
+            plan_mode_dialog_shown: false,
+            plan_mode_dialog_pending: false,
+            default_placeholder,
         }
     }
 
@@ -759,24 +848,27 @@ impl ChatWidget {
         } = common;
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
+        let default_placeholder = placeholder.clone();
+
+        let bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: frame_requester.clone(),
+            app_event_tx: app_event_tx.clone(),
+            has_input_focus: true,
+            enhanced_keys_supported,
+            placeholder_text: placeholder,
+            disable_paste_burst: config.disable_paste_burst,
+            #[cfg(feature = "slash_commands")]
+            custom_slash_commands: custom_slash_commands.clone(),
+        });
 
         let codex_op_tx =
             spawn_agent_from_existing(conversation, session_configured, app_event_tx.clone());
 
         Self {
-            app_event_tx: app_event_tx.clone(),
-            frame_requester: frame_requester.clone(),
+            app_event_tx,
+            frame_requester,
             codex_op_tx,
-            bottom_pane: BottomPane::new(BottomPaneParams {
-                frame_requester,
-                app_event_tx,
-                has_input_focus: true,
-                enhanced_keys_supported,
-                placeholder_text: placeholder,
-                disable_paste_burst: config.disable_paste_burst,
-                #[cfg(feature = "slash_commands")]
-                custom_slash_commands: custom_slash_commands.clone(),
-            }),
+            bottom_pane,
             active_exec_cell: None,
             config: config.clone(),
             auth_manager,
@@ -799,15 +891,27 @@ impl ChatWidget {
             show_welcome_banner: true,
             suppress_session_configured_redraw: true,
             pending_notification: None,
+            plan_mode_session: None,
+            plan_mode_dialog_shown: false,
+            plan_mode_dialog_pending: false,
+            default_placeholder,
         }
     }
 
     pub fn desired_height(&self, width: u16) -> u16 {
+        let header_height = self.plan_mode_session.as_ref().map_or(0, |session| {
+            if session.allowed_tools.is_empty() {
+                1
+            } else {
+                2
+            }
+        });
         self.bottom_pane.desired_height(width)
             + self
                 .active_exec_cell
                 .as_ref()
                 .map_or(0, |c| c.desired_height(width) + 1)
+            + header_height
     }
 
     pub(crate) fn handle_key_event(&mut self, key_event: KeyEvent) {
@@ -876,6 +980,22 @@ impl ChatWidget {
         }
     }
 
+    fn parse_plan_mode_target(arguments: &str) -> Result<Option<AskForApproval>, String> {
+        let trimmed = arguments.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        match trimmed {
+            "on-request" => Ok(Some(AskForApproval::OnRequest)),
+            "on-failure" => Ok(Some(AskForApproval::OnFailure)),
+            "never" => Ok(Some(AskForApproval::Never)),
+            "unless-trusted" | "untrusted" => Ok(Some(AskForApproval::UnlessTrusted)),
+            other => Err(format!(
+                "Unknown approval mode '{other}'. Expected one of: on-request, on-failure, never, unless-trusted."
+            )),
+        }
+    }
+
     pub(crate) fn attach_image(
         &mut self,
         path: PathBuf,
@@ -909,6 +1029,22 @@ impl ChatWidget {
                 const INIT_PROMPT: &str = include_str!("../prompt_for_init_command.md");
                 self.submit_text_message(INIT_PROMPT.to_string());
             }
+            SlashCommand::Plan => {
+                self.app_event_tx.send(AppEvent::CodexOp(Op::EnterPlanMode));
+            }
+            SlashCommand::ExitPlan => {
+                self.app_event_tx.send(AppEvent::CodexOp(Op::ExitPlanMode));
+            }
+            SlashCommand::ApplyPlan => match Self::parse_plan_mode_target(arguments) {
+                Ok(target_mode) => {
+                    self.app_event_tx
+                        .send(AppEvent::CodexOp(Op::ApplyPlanMode { target_mode }));
+                }
+                Err(message) => {
+                    self.add_to_history(history_cell::new_error_event(message));
+                    self.request_redraw();
+                }
+            },
             SlashCommand::Compact => {
                 self.clear_token_usage();
                 self.app_event_tx.send(AppEvent::CodexOp(Op::Compact));
@@ -1210,6 +1346,10 @@ impl ChatWidget {
                     self.on_error("Turn aborted: replaced by a new task".to_owned())
                 }
             },
+            EventMsg::PlanModeActivated(event) => self.on_plan_mode_activated(event),
+            EventMsg::PlanModeUpdated(event) => self.on_plan_mode_updated(event),
+            EventMsg::PlanModeExited(event) => self.on_plan_mode_exited(event),
+            EventMsg::PlanModeApplied(event) => self.on_plan_mode_applied(event),
             EventMsg::PlanUpdate(update) => self.on_plan_update(update),
             EventMsg::ExecApprovalRequest(ev) => {
                 // For replayed events, synthesize an empty id (these should not occur).
@@ -1569,6 +1709,74 @@ impl ChatWidget {
         &self.config
     }
 
+    #[cfg(test)]
+    pub(crate) fn plan_mode_dialog_shown(&self) -> bool {
+        self.plan_mode_dialog_shown
+    }
+
+    pub(crate) fn is_plan_mode_active(&self) -> bool {
+        self.plan_mode_session.is_some()
+    }
+
+    fn render_plan_header(&self, area: Rect, buf: &mut Buffer) {
+        let Some(session) = self.plan_mode_session.as_ref() else {
+            return;
+        };
+        if area.is_empty() {
+            return;
+        }
+
+        let lines = self.plan_mode_header_lines(session);
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
+        paragraph.render_ref(area, buf);
+    }
+
+    fn plan_mode_header_lines(&self, session: &PlanModeSessionPayload) -> Vec<Line<'static>> {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+
+        let header_spans: Vec<Span<'static>> = vec![
+            " PLAN ".cyan().bold(),
+            " Read-only planning mode".dim(),
+            " • toggle with ".dim(),
+            key_hint::ctrl('P'),
+            " • exit with ".dim(),
+            "/exit-plan".cyan(),
+            " • apply with ".dim(),
+            "/apply-plan [mode]".cyan(),
+            " • remember /save-plan <path>".dim(),
+        ];
+        lines.push(header_spans.into());
+
+        if !session.allowed_tools.is_empty() {
+            let tools = session.allowed_tools.join(", ");
+            let mut tool_spans: Vec<Span<'static>> = Vec::new();
+            tool_spans.push(" Allowed tools: ".dim());
+            let tools_span: Span<'static> = tools.cyan();
+            tool_spans.push(tools_span);
+            lines.push(tool_spans.into());
+        }
+
+        lines
+    }
+
+    fn plan_mode_placeholder_text(&self) -> Option<String> {
+        let session = self.plan_mode_session.as_ref()?;
+        let feature = session.plan_artifact.title.trim();
+        let feature = if feature.is_empty() {
+            "feature"
+        } else {
+            feature
+        };
+        Some(format!("Plan {feature}"))
+    }
+
+    fn refresh_plan_mode_placeholder(&mut self) {
+        let placeholder = self
+            .plan_mode_placeholder_text()
+            .unwrap_or_else(|| self.default_placeholder.clone());
+        self.bottom_pane.set_placeholder_text(placeholder);
+    }
+
     pub(crate) fn clear_token_usage(&mut self) {
         self.token_info = None;
         self.bottom_pane.set_token_usage(None);
@@ -1582,7 +1790,8 @@ impl ChatWidget {
 
 impl WidgetRef for &ChatWidget {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
-        let [_, active_cell_area, bottom_pane_area] = self.layout_areas(area);
+        let [header_area, active_cell_area, bottom_pane_area] = self.layout_areas(area);
+        self.render_plan_header(header_area, buf);
         (&self.bottom_pane).render(bottom_pane_area, buf);
         if !active_cell_area.is_empty()
             && let Some(cell) = &self.active_exec_cell

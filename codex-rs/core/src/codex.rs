@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use std::sync::MutexGuard;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
+use uuid::Uuid;
 
 use crate::AuthManager;
 use crate::client_common::REVIEW_PROMPT;
@@ -67,6 +68,7 @@ use crate::exec_command::ExecSessionManager;
 use crate::exec_command::WRITE_STDIN_TOOL_NAME;
 use crate::exec_command::WriteStdinParams;
 use crate::exec_env::create_env;
+use crate::mcp_connection_manager::MCP_TOOL_NAME_DELIMITER;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::mcp_tool_call::handle_mcp_tool_call;
 use crate::model_family::find_family_for_model;
@@ -76,9 +78,20 @@ use crate::openai_tools::ToolsConfig;
 use crate::openai_tools::ToolsConfigParams;
 use crate::openai_tools::get_openai_tools;
 use crate::parse_command::parse_command;
+use crate::plan_mode::PLAN_MODE_SYSTEM_PROMPT;
+use crate::plan_mode::PlanArtifact;
+use crate::plan_mode::PlanEntryType;
+use crate::plan_mode::PlanModeEvent;
+use crate::plan_mode::PlanModeSession;
+use crate::plan_mode::PlanTelemetry;
+use crate::plan_mode::ToolCapability;
+use crate::plan_mode::ToolMode;
+use crate::plan_tool::StepStatus;
+use crate::plan_tool::UpdatePlanArgs;
 use crate::plan_tool::handle_update_plan;
 use crate::project_doc::get_user_instructions;
 use crate::protocol::AgentMessageDeltaEvent;
+use crate::protocol::AgentMessageEvent;
 use crate::protocol::AgentReasoningDeltaEvent;
 use crate::protocol::AgentReasoningRawContentDeltaEvent;
 use crate::protocol::AgentReasoningSectionBreakEvent;
@@ -134,6 +147,11 @@ use codex_protocol::models::LocalShellAction;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::ShellToolCallParams;
+use codex_protocol::plan_mode::PlanModeActivatedEvent;
+use codex_protocol::plan_mode::PlanModeAppliedEvent;
+use codex_protocol::plan_mode::PlanModeExitedEvent;
+use codex_protocol::plan_mode::PlanModeSessionPayload;
+use codex_protocol::plan_mode::PlanModeUpdatedEvent;
 use codex_protocol::protocol::InitialHistory;
 
 mod compact;
@@ -180,6 +198,7 @@ pub(crate) const MODEL_FORMAT_MAX_LINES: usize = 256; // lines
 pub(crate) const MODEL_FORMAT_HEAD_LINES: usize = MODEL_FORMAT_MAX_LINES / 2;
 pub(crate) const MODEL_FORMAT_TAIL_LINES: usize = MODEL_FORMAT_MAX_LINES - MODEL_FORMAT_HEAD_LINES; // 128
 pub(crate) const MODEL_FORMAT_HEAD_BYTES: usize = MODEL_FORMAT_MAX_BYTES / 2;
+const PLAN_IMPLEMENTATION_TRIGGER_TEXT: &str = "(auto) Plan approved. Begin implementing the approved plan now by following the recorded steps, executing safe commands, and reporting progress as you go.";
 
 impl Codex {
     /// Spawn a new [`Codex`] and initialize the session.
@@ -278,6 +297,8 @@ struct State {
     history: ConversationHistory,
     token_info: Option<TokenUsageInfo>,
     next_internal_sub_id: u64,
+    plan_mode: Option<PlanModeSession>,
+    plan_mode_prompt_recorded: bool,
 }
 
 /// Context for an initialized model agent
@@ -491,7 +512,7 @@ impl Session {
         })?;
         let rollout_path = rollout_recorder.rollout_path.clone();
         // Create the mutable state for the Session.
-        let state = State {
+        let mut state = State {
             history: ConversationHistory::new(),
             ..Default::default()
         };
@@ -524,6 +545,17 @@ impl Session {
             }
         };
 
+        if config.plan_mode.plan_enabled {
+            state.plan_mode = Some(PlanModeSession::new(
+                Uuid::from(conversation_id),
+                approval_policy,
+                Session::plan_mode_capabilities(&mcp_connection_manager),
+                &config.plan_mode,
+                config.sandbox_policy.has_full_network_access(),
+            ));
+            state.plan_mode_prompt_recorded = false;
+        }
+
         // Surface individual client start-up failures to the user.
         if !failed_clients.is_empty() {
             for (server_name, err) in failed_clients {
@@ -546,7 +578,7 @@ impl Session {
             model_reasoning_summary,
             conversation_id,
         );
-        let turn_context = TurnContext {
+        let mut turn_context = TurnContext {
             client,
             tools_config: ToolsConfig::new(&ToolsConfigParams {
                 model_family: &config.model_family,
@@ -567,6 +599,20 @@ impl Session {
             cwd,
             is_review_mode: false,
         };
+
+        if config.plan_mode.plan_enabled {
+            turn_context.tools_config = ToolsConfig::new(&ToolsConfigParams {
+                model_family: &config.model_family,
+                approval_policy,
+                sandbox_policy: turn_context.sandbox_policy.clone(),
+                include_plan_tool: true,
+                include_apply_patch_tool: false,
+                include_web_search_request: config.tools_web_search_request,
+                use_streamable_shell_tool: config.use_experimental_streamable_shell_tool,
+                include_view_image_tool: config.include_view_image_tool,
+                experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
+            });
+        }
         let sess = Arc::new(Session {
             conversation_id,
             tx_event: tx_event.clone(),
@@ -583,11 +629,24 @@ impl Session {
             show_raw_agent_reasoning: config.show_raw_agent_reasoning,
         });
 
+        if config.plan_mode.plan_enabled
+            && let Some(telemetry) = sess
+                .state
+                .lock_unchecked()
+                .plan_mode
+                .as_ref()
+                .map(PlanModeSession::entered_telemetry)
+        {
+            sess.log_plan_telemetry(&telemetry);
+        }
+
         // Dispatch the SessionConfiguredEvent first and then report any errors.
         // If resuming, include converted initial messages in the payload so UIs can render them immediately.
         let initial_messages = initial_history.get_event_msgs();
         sess.record_initial_history(&turn_context, initial_history)
             .await;
+
+        sess.ensure_plan_mode_prompt_recorded().await;
 
         let events = std::iter::once(Event {
             id: INITIAL_SUBMIT_ID.to_owned(),
@@ -603,6 +662,14 @@ impl Session {
         })
         .chain(post_session_configured_error_events.into_iter());
         for event in events {
+            sess.send_event(event).await;
+        }
+
+        if let Some(session) = sess.plan_mode_payload() {
+            let event = Event {
+                id: INITIAL_SUBMIT_ID.to_owned(),
+                msg: EventMsg::PlanModeActivated(PlanModeActivatedEvent { session }),
+            };
             sess.send_event(event).await;
         }
 
@@ -627,10 +694,14 @@ impl Session {
     }
 
     fn next_internal_sub_id(&self) -> String {
+        self.next_internal_sub_id_with_prefix("auto-compact")
+    }
+
+    fn next_internal_sub_id_with_prefix(&self, prefix: &str) -> String {
         let mut state = self.state.lock_unchecked();
         let id = state.next_internal_sub_id;
         state.next_internal_sub_id += 1;
-        format!("auto-compact-{id}")
+        format!("{prefix}-{id}")
     }
 
     async fn record_initial_history(
@@ -989,6 +1060,84 @@ impl Session {
         let sub_id = begin_ctx.sub_id.clone();
         let call_id = begin_ctx.call_id.clone();
 
+        let raw_command = begin_ctx.command_for_display.join(" ");
+        let command_label = if raw_command.is_empty() {
+            "command execution".to_string()
+        } else {
+            raw_command.clone()
+        };
+
+        let plan_mode_shell_allow = {
+            let state = self.state.lock_unchecked();
+            state.plan_mode.as_ref().map(|session| {
+                if begin_ctx.apply_patch.is_some() {
+                    false
+                } else {
+                    session.is_shell_allowed(&begin_ctx.command_for_display)
+                }
+            })
+        };
+
+        if matches!(plan_mode_shell_allow, Some(false)) {
+            let (entry_type, summary, details) =
+                if let Some(patch_ctx) = begin_ctx.apply_patch.as_ref() {
+                    let change_count = patch_ctx.changes.len();
+                    let files: Vec<String> = patch_ctx
+                        .changes
+                        .keys()
+                        .map(|path| path.display().to_string())
+                        .collect();
+                    let summary = if change_count == 0 {
+                        "apply_patch".to_string()
+                    } else {
+                        format!(
+                            "apply_patch affecting {change_count} file{}",
+                            if change_count == 1 { "" } else { "s" }
+                        )
+                    };
+                    let details = if files.is_empty() {
+                        None
+                    } else {
+                        Some(format!("files: {}", files.join(", ")))
+                    };
+                    (PlanEntryType::FileChange, summary, details)
+                } else {
+                    let mut detail_lines = Vec::new();
+                    if !command_label.is_empty() {
+                        detail_lines.push(format!("command: {command_label}"));
+                    }
+                    detail_lines.push(format!("cwd: {}", begin_ctx.cwd.display()));
+                    let details = Some(detail_lines.join(
+                        "
+",
+                    ));
+                    (PlanEntryType::Command, command_label, details)
+                };
+            let mut message = match entry_type {
+                PlanEntryType::FileChange => {
+                    format!("Plan Mode captured proposed file changes ({summary})")
+                }
+                PlanEntryType::Command => format!("Plan Mode captured command `{summary}`"),
+                PlanEntryType::Research | PlanEntryType::Decision => summary.clone(),
+            };
+            if let Some(detail_text) = details.clone() {
+                message.push('\n');
+                message.push_str(&detail_text);
+            }
+            self.capture_plan_entry(&sub_id, entry_type, summary.clone(), details.clone())
+                .await;
+            self.notify_background_event(&sub_id, message.clone()).await;
+            let output = ExecToolCallOutput {
+                exit_code: -1,
+                stdout: StreamOutput::new(String::new()),
+                stderr: StreamOutput::new(message.clone()),
+                aggregated_output: StreamOutput::new(message),
+                duration: Duration::default(),
+                timed_out: false,
+            };
+            return Ok(output);
+        }
+
         self.on_exec_command_begin(turn_diff_tracker, begin_ctx.clone())
             .await;
 
@@ -1055,7 +1204,27 @@ impl Session {
     /// Build the full turn input by concatenating the current conversation
     /// history with additional items for this turn.
     pub fn turn_input_with_history(&self, extra: Vec<ResponseItem>) -> Vec<ResponseItem> {
-        [self.state.lock_unchecked().history.contents(), extra].concat()
+        let (history, plan_prompt_required) = {
+            let state = self.state.lock_unchecked();
+            (
+                state.history.contents(),
+                state.plan_mode.is_some() && state.plan_mode_prompt_recorded,
+            )
+        };
+
+        let mut items = Vec::with_capacity(history.len() + extra.len() + 1);
+        if plan_prompt_required {
+            items.push(ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: PLAN_MODE_SYSTEM_PROMPT.to_string(),
+                }],
+            });
+        }
+        items.extend(history);
+        items.extend(extra);
+        items
     }
 
     /// Returns the input if there was no task running to inject into
@@ -1082,11 +1251,39 @@ impl Session {
 
     pub async fn call_tool(
         &self,
+        sub_id: &str,
         server: &str,
         tool: &str,
         arguments: Option<serde_json::Value>,
         timeout: Option<Duration>,
     ) -> anyhow::Result<CallToolResult> {
+        let blocked = {
+            let state = self.state.lock_unchecked();
+            match state.plan_mode.as_ref() {
+                Some(session) => {
+                    let qualified = format!("{server}{MCP_TOOL_NAME_DELIMITER}{tool}");
+                    if session.is_tool_allowed(&qualified) || session.is_tool_allowed(tool) {
+                        None
+                    } else {
+                        Some(())
+                    }
+                }
+                None => None,
+            }
+        };
+
+        if blocked.is_some() {
+            let summary = format!("Call MCP tool {server}::{tool}");
+            let details = arguments.as_ref().map(|args| format!("arguments: {args}"));
+            self.capture_plan_entry(sub_id, PlanEntryType::Research, summary, details)
+                .await;
+            let message = format!(
+                "Plan Mode blocked MCP tool {server}::{tool}. Exit Plan Mode or update plan_mode.allowed_read_only_tools to run it."
+            );
+            self.notify_background_event(sub_id, message.clone()).await;
+            return Err(anyhow::anyhow!(message));
+        }
+
         self.mcp_connection_manager
             .call_tool(server, tool, arguments, timeout)
             .await
@@ -1105,6 +1302,289 @@ impl Session {
     /// Spawn the configured notifier (if any) with the given JSON payload as
     /// the last argument. Failures are logged but otherwise ignored so that
     /// notification issues do not interfere with the main workflow.
+    fn plan_mode_capabilities(manager: &McpConnectionManager) -> Vec<ToolCapability> {
+        let mut capabilities = Vec::new();
+        let mut seen = HashSet::new();
+
+        for (qualified_name, tool) in manager.list_all_tools() {
+            let mcp_types::Tool {
+                annotations, name, ..
+            } = tool;
+
+            let read_only = annotations
+                .as_ref()
+                .and_then(|ann| ann.read_only_hint)
+                .unwrap_or(false);
+            if !read_only {
+                continue;
+            }
+
+            let requires_network = annotations
+                .as_ref()
+                .and_then(|ann| ann.open_world_hint)
+                .unwrap_or(false);
+
+            Self::push_capability(
+                &mut capabilities,
+                &mut seen,
+                qualified_name,
+                requires_network,
+            );
+            Self::push_capability(&mut capabilities, &mut seen, name, requires_network);
+        }
+
+        // Attachments are allowed only when explicitly configured.
+        Self::push_capability(
+            &mut capabilities,
+            &mut seen,
+            "attachments.read".to_string(),
+            true,
+        );
+
+        capabilities
+    }
+
+    fn push_capability(
+        capabilities: &mut Vec<ToolCapability>,
+        seen: &mut HashSet<String>,
+        id: String,
+        requires_network: bool,
+    ) {
+        if seen.insert(id.clone()) {
+            capabilities.push(
+                ToolCapability::new(id, ToolMode::ReadOnly)
+                    .with_network_requirement(requires_network),
+            );
+        }
+    }
+
+    fn plan_mode_payload(&self) -> Option<PlanModeSessionPayload> {
+        self.state
+            .lock_unchecked()
+            .plan_mode
+            .as_ref()
+            .map(PlanModeSession::to_payload)
+    }
+
+    async fn ensure_plan_mode_prompt_recorded(&self) {
+        let mut state = self.state.lock_unchecked();
+        if state.plan_mode.is_some() && !state.plan_mode_prompt_recorded {
+            state.plan_mode_prompt_recorded = true;
+        }
+    }
+
+    fn try_enter_plan_mode(
+        &self,
+        approval_policy: AskForApproval,
+        config: &Config,
+        network_enabled: bool,
+    ) -> Result<PlanModeSessionPayload, String> {
+        let mut state = self.state.lock_unchecked();
+        if state.plan_mode.is_some() {
+            return Err("Plan Mode is already active".to_string());
+        }
+        let session = PlanModeSession::new(
+            Uuid::from(self.conversation_id),
+            approval_policy,
+            Self::plan_mode_capabilities(&self.mcp_connection_manager),
+            &config.plan_mode,
+            network_enabled,
+        );
+        let telemetry = session.entered_telemetry();
+        let payload = session.to_payload();
+        state.plan_mode = Some(session);
+        state.plan_mode_prompt_recorded = false;
+        drop(state);
+        self.log_plan_telemetry(&telemetry);
+        Ok(payload)
+    }
+
+    fn try_exit_plan_mode(&self) -> Result<AskForApproval, String> {
+        let mut state = self.state.lock_unchecked();
+        let Some(mut session) = state.plan_mode.take() else {
+            return Err("Plan Mode is not active".to_string());
+        };
+        state.plan_mode_prompt_recorded = false;
+        let previous_mode = session.entered_from;
+        let entry_count = session.plan_artifact.entry_count();
+        session.exit_plan_mode();
+        drop(state);
+        let telemetry = PlanTelemetry::new(PlanModeEvent::Exit, previous_mode, entry_count);
+        self.log_plan_telemetry(&telemetry);
+        Ok(previous_mode)
+    }
+
+    fn try_apply_plan_mode(
+        &self,
+        target_mode: Option<AskForApproval>,
+    ) -> Result<(AskForApproval, usize, PlanArtifact), String> {
+        let mut state = self.state.lock_unchecked();
+        let Some(mut session) = state.plan_mode.take() else {
+            return Err("Plan Mode is not active".to_string());
+        };
+        state.plan_mode_prompt_recorded = false;
+        let previous_mode = session.entered_from;
+        let resolved_mode = target_mode.unwrap_or(session.entered_from);
+        let entry_count = session.plan_artifact.entry_count();
+        session.begin_apply(Some(resolved_mode));
+        let artifact = session.plan_artifact.clone();
+        drop(state);
+        let telemetry = PlanTelemetry::new(PlanModeEvent::ApplySuccess, previous_mode, entry_count);
+        self.log_plan_telemetry(&telemetry);
+        Ok((resolved_mode, entry_count, artifact))
+    }
+
+    async fn capture_plan_entry(
+        &self,
+        sub_id: &str,
+        entry_type: PlanEntryType,
+        summary: impl Into<String>,
+        details: Option<String>,
+    ) -> Option<PlanTelemetry> {
+        let summary = summary.into();
+        let result = {
+            let mut state = self.state.lock_unchecked();
+            let session = state.plan_mode.as_mut()?;
+            let telemetry = session.record_refusal(entry_type, summary.clone(), details.clone());
+            let payload = session.to_payload();
+            (telemetry, payload)
+        };
+        let (telemetry, payload) = result;
+        let event = Event {
+            id: sub_id.to_owned(),
+            msg: EventMsg::PlanModeUpdated(PlanModeUpdatedEvent { session: payload }),
+        };
+        self.send_event(event).await;
+        self.log_plan_telemetry(&telemetry);
+        Some(telemetry)
+    }
+
+    pub(crate) async fn apply_plan_tool_update(
+        &self,
+        sub_id: &str,
+        update: &UpdatePlanArgs,
+    ) -> Option<()> {
+        let payload = {
+            let mut state = self.state.lock_unchecked();
+            let session = match state.plan_mode.as_mut() {
+                Some(session) => session,
+                None => return None,
+            };
+            session.plan_artifact.next_actions = update
+                .plan
+                .iter()
+                .map(|item| match item.status {
+                    StepStatus::Pending => format!("[pending] {}", item.step),
+                    StepStatus::InProgress => format!("[in-progress] {}", item.step),
+                    StepStatus::Completed => format!("[completed] {}", item.step),
+                })
+                .collect();
+            if let Some(explanation) = &update.explanation {
+                session.plan_artifact.assumptions = vec![explanation.clone()];
+            }
+            session.to_payload()
+        };
+        let event = Event {
+            id: sub_id.to_owned(),
+            msg: EventMsg::PlanModeUpdated(PlanModeUpdatedEvent { session: payload }),
+        };
+        self.send_event(event).await;
+        Some(())
+    }
+
+    async fn record_plan_summary(&self, sub_id: &str, artifact: &PlanArtifact) {
+        let summary = artifact.to_summary_markdown();
+        if summary.is_empty() {
+            return;
+        }
+
+        let response_item = ResponseItem::Message {
+            id: None,
+            role: "system".to_string(),
+            content: vec![ContentItem::InputText {
+                text: summary.clone(),
+            }],
+        };
+        self.record_conversation_items(std::slice::from_ref(&response_item))
+            .await;
+
+        let event = Event {
+            id: sub_id.to_owned(),
+            msg: EventMsg::AgentMessage(AgentMessageEvent { message: summary }),
+        };
+        self.send_event(event).await;
+    }
+
+    fn log_plan_telemetry(&self, telemetry: &PlanTelemetry) {
+        info!(
+            target: "plan_mode",
+            event = ?telemetry.event,
+            previous_mode = ?telemetry.previous_mode,
+            plan_entry_count = telemetry.plan_entry_count,
+            occurred_at = %telemetry.occurred_at.to_rfc3339(),
+            "plan_mode_telemetry"
+        );
+    }
+
+    fn validate_plan_mode_attachments(
+        &self,
+        items: &[InputItem],
+        turn_context: &TurnContext,
+    ) -> Result<(), String> {
+        let env_context = EnvironmentContext::from(turn_context);
+        let allow_attachments = {
+            let state = self.state.lock_unchecked();
+            let Some(session) = state.plan_mode.as_ref() else {
+                return Ok(());
+            };
+            session.is_tool_allowed("attachments.read")
+        };
+
+        let attachments: Vec<PathBuf> = items
+            .iter()
+            .filter_map(|item| match item {
+                InputItem::LocalImage { path } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+
+        if attachments.is_empty() {
+            return Ok(());
+        }
+
+        if !allow_attachments {
+            return Err(
+                "Attachments are disabled while Plan Mode is active. Remove the files or exit Plan Mode before continuing.".to_string(),
+            );
+        }
+
+        for original in attachments {
+            let absolute = if original.is_absolute() {
+                original.clone()
+            } else {
+                turn_context.cwd.join(&original)
+            };
+            let canonical = match absolute.canonicalize() {
+                Ok(path) => path,
+                Err(_) => {
+                    return Err(format!(
+                        "Plan Mode could not verify attachment path {path}. Remove the attachment or exit Plan Mode.",
+                        path = absolute.display()
+                    ));
+                }
+            };
+            if !env_context.is_path_within_workspace(&canonical) {
+                return Err(format!(
+                    "Plan Mode only permits attachments from {workspace}. Remove {path} or exit Plan Mode before continuing.",
+                    workspace = turn_context.cwd.display(),
+                    path = canonical.display()
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     fn maybe_notify(&self, notification: UserNotification) {
         let Some(notify_command) = &self.notify else {
             return;
@@ -1392,6 +1872,7 @@ async fn submission_loop(
                 }
             }
             Op::UserInput { items } => {
+                #[allow(unused_mut)]
                 let mut items = items;
                 #[cfg(feature = "slash_commands")]
                 let mut slash_model_override: Option<String> = None;
@@ -1488,6 +1969,15 @@ async fn submission_loop(
                             }
                         }
                     }
+                }
+
+                if let Err(message) = sess.validate_plan_mode_attachments(&items, &turn_context) {
+                    let event = Event {
+                        id: sub.id.clone(),
+                        msg: EventMsg::Error(ErrorEvent { message }),
+                    };
+                    sess.send_event(event).await;
+                    continue;
                 }
 
                 // attempt to inject input into current task
@@ -1690,6 +2180,150 @@ async fn submission_loop(
                     );
                 }
             }
+            Op::EnterPlanMode => {
+                let network_enabled = turn_context.sandbox_policy.has_full_network_access();
+                match sess.try_enter_plan_mode(
+                    turn_context.approval_policy,
+                    &config,
+                    network_enabled,
+                ) {
+                    Ok(session) => {
+                        let event = Event {
+                            id: sub.id.clone(),
+                            msg: EventMsg::PlanModeActivated(PlanModeActivatedEvent { session }),
+                        };
+                        sess.send_event(event).await;
+                        let previous = Arc::clone(&turn_context);
+                        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+                            model_family: &config.model_family,
+                            approval_policy: previous.approval_policy,
+                            sandbox_policy: previous.sandbox_policy.clone(),
+                            include_plan_tool: true,
+                            include_apply_patch_tool: false,
+                            include_web_search_request: config.tools_web_search_request,
+                            use_streamable_shell_tool: config
+                                .use_experimental_streamable_shell_tool,
+                            include_view_image_tool: config.include_view_image_tool,
+                            experimental_unified_exec_tool: config
+                                .use_experimental_unified_exec_tool,
+                        });
+                        turn_context = Arc::new(TurnContext {
+                            client: previous.client.clone(),
+                            tools_config,
+                            user_instructions: previous.user_instructions.clone(),
+                            base_instructions: previous.base_instructions.clone(),
+                            approval_policy: previous.approval_policy,
+                            sandbox_policy: previous.sandbox_policy.clone(),
+                            shell_environment_policy: previous.shell_environment_policy.clone(),
+                            cwd: previous.cwd.clone(),
+                            is_review_mode: previous.is_review_mode,
+                        });
+                        sess.ensure_plan_mode_prompt_recorded().await;
+                    }
+                    Err(message) => {
+                        let event = Event {
+                            id: sub.id.clone(),
+                            msg: EventMsg::Error(ErrorEvent { message }),
+                        };
+                        sess.send_event(event).await;
+                    }
+                }
+            }
+            Op::ExitPlanMode => match sess.try_exit_plan_mode() {
+                Ok(previous_mode) => {
+                    let event = Event {
+                        id: sub.id.clone(),
+                        msg: EventMsg::PlanModeExited(PlanModeExitedEvent { previous_mode }),
+                    };
+                    sess.send_event(event).await;
+                    let previous = Arc::clone(&turn_context);
+                    let tools_config = ToolsConfig::new(&ToolsConfigParams {
+                        model_family: &config.model_family,
+                        approval_policy: previous_mode,
+                        sandbox_policy: previous.sandbox_policy.clone(),
+                        include_plan_tool: config.include_plan_tool,
+                        include_apply_patch_tool: config.include_apply_patch_tool,
+                        include_web_search_request: config.tools_web_search_request,
+                        use_streamable_shell_tool: config.use_experimental_streamable_shell_tool,
+                        include_view_image_tool: config.include_view_image_tool,
+                        experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
+                    });
+                    turn_context = Arc::new(TurnContext {
+                        client: previous.client.clone(),
+                        tools_config,
+                        user_instructions: previous.user_instructions.clone(),
+                        base_instructions: previous.base_instructions.clone(),
+                        approval_policy: previous_mode,
+                        sandbox_policy: previous.sandbox_policy.clone(),
+                        shell_environment_policy: previous.shell_environment_policy.clone(),
+                        cwd: previous.cwd.clone(),
+                        is_review_mode: previous.is_review_mode,
+                    });
+                }
+                Err(message) => {
+                    let event = Event {
+                        id: sub.id.clone(),
+                        msg: EventMsg::Error(ErrorEvent { message }),
+                    };
+                    sess.send_event(event).await;
+                }
+            },
+            Op::ApplyPlanMode { target_mode } => match sess.try_apply_plan_mode(target_mode) {
+                Ok((target_mode, plan_entries, plan_artifact)) => {
+                    let event = Event {
+                        id: sub.id.clone(),
+                        msg: EventMsg::PlanModeApplied(PlanModeAppliedEvent {
+                            target_mode,
+                            plan_entries,
+                        }),
+                    };
+                    sess.send_event(event).await;
+                    sess.record_plan_summary(&sub.id, &plan_artifact).await;
+                    let previous = Arc::clone(&turn_context);
+                    let tools_config = ToolsConfig::new(&ToolsConfigParams {
+                        model_family: &config.model_family,
+                        approval_policy: target_mode,
+                        sandbox_policy: previous.sandbox_policy.clone(),
+                        include_plan_tool: config.include_plan_tool,
+                        include_apply_patch_tool: config.include_apply_patch_tool,
+                        include_web_search_request: config.tools_web_search_request,
+                        use_streamable_shell_tool: config.use_experimental_streamable_shell_tool,
+                        include_view_image_tool: config.include_view_image_tool,
+                        experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
+                    });
+                    turn_context = Arc::new(TurnContext {
+                        client: previous.client.clone(),
+                        tools_config,
+                        user_instructions: previous.user_instructions.clone(),
+                        base_instructions: previous.base_instructions.clone(),
+                        approval_policy: target_mode,
+                        sandbox_policy: previous.sandbox_policy.clone(),
+                        shell_environment_policy: previous.shell_environment_policy.clone(),
+                        cwd: previous.cwd.clone(),
+                        is_review_mode: previous.is_review_mode,
+                    });
+
+                    let follow_up_sub_id =
+                        sess.next_internal_sub_id_with_prefix("plan-implementation");
+                    let follow_up_input = vec![InputItem::Text {
+                        text: PLAN_IMPLEMENTATION_TRIGGER_TEXT.to_string(),
+                    }];
+                    let follow_up_task = AgentTask::spawn(
+                        sess.clone(),
+                        Arc::clone(&turn_context),
+                        follow_up_sub_id,
+                        follow_up_input,
+                    );
+                    sess.set_task(follow_up_task);
+                }
+                Err(message) => {
+                    let event = Event {
+                        id: sub.id.clone(),
+                        msg: EventMsg::Error(ErrorEvent { message }),
+                    };
+                    sess.send_event(event).await;
+                }
+            },
             Op::Shutdown => {
                 info!("Shutting down Codex instance");
 
@@ -2696,6 +3330,18 @@ async fn handle_function_call(
                 }
             };
             let abs = turn_context.resolve_path(Some(args.path));
+            if let Err(message) = sess.validate_plan_mode_attachments(
+                &[InputItem::LocalImage { path: abs.clone() }],
+                turn_context,
+            ) {
+                return ResponseInputItem::FunctionCallOutput {
+                    call_id,
+                    output: FunctionCallOutputPayload {
+                        content: message,
+                        success: Some(false),
+                    },
+                };
+            }
             let output = match sess.inject_input(vec![InputItem::LocalImage { path: abs }]) {
                 Ok(()) => FunctionCallOutputPayload {
                     content: "attached local image path".to_string(),
@@ -3499,6 +4145,7 @@ mod tests {
     use super::*;
     use crate::config::ConfigOverrides;
     use crate::config::ConfigToml;
+    use crate::plan_mode::PlanModeConfig;
     use crate::protocol::CompactedItem;
     use crate::protocol::InitialHistory;
     use crate::protocol::ResumedHistory;
@@ -3510,6 +4157,74 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration as StdDuration;
+    use uuid::Uuid;
+
+    #[test]
+    fn ensure_plan_mode_prompt_records_once_per_activation() {
+        let (session, turn_context) = make_session_and_context();
+
+        {
+            let mut state = session.state.lock_unchecked();
+            state.plan_mode = Some(PlanModeSession::new(
+                Uuid::new_v4(),
+                turn_context.approval_policy,
+                Vec::new(),
+                &PlanModeConfig::default(),
+                true,
+            ));
+            state.plan_mode_prompt_recorded = false;
+        }
+
+        {
+            let state = session.state.lock_unchecked();
+            assert!(state.plan_mode.is_some());
+            assert!(!state.plan_mode_prompt_recorded);
+        }
+
+        tokio_test::block_on(session.ensure_plan_mode_prompt_recorded());
+        {
+            let state = session.state.lock_unchecked();
+            assert!(state.plan_mode_prompt_recorded);
+        }
+        let items = session.turn_input_with_history(Vec::new());
+        assert!(!items.is_empty());
+        assert_plan_prompt(&items[0]);
+
+        let items = session.turn_input_with_history(Vec::new());
+        assert!(!items.is_empty());
+        assert_plan_prompt(&items[0]);
+
+        session
+            .try_exit_plan_mode()
+            .expect("exit plan mode should succeed");
+
+        {
+            let mut state = session.state.lock_unchecked();
+            state.plan_mode = Some(PlanModeSession::new(
+                Uuid::new_v4(),
+                turn_context.approval_policy,
+                Vec::new(),
+                &PlanModeConfig::default(),
+                true,
+            ));
+            state.plan_mode_prompt_recorded = false;
+        }
+
+        tokio_test::block_on(session.ensure_plan_mode_prompt_recorded());
+        let items = session.turn_input_with_history(Vec::new());
+        assert!(!items.is_empty());
+        assert_plan_prompt(&items[0]);
+    }
+
+    #[test]
+    fn ensure_plan_mode_prompt_noop_without_plan_mode() {
+        let (session, _turn_context) = make_session_and_context();
+
+        tokio_test::block_on(session.ensure_plan_mode_prompt_recorded());
+
+        let items = session.turn_input_with_history(Vec::new());
+        assert!(items.is_empty(), "expected no plan prompt to be included");
+    }
 
     #[test]
     fn reconstruct_history_matches_live_compactions() {
@@ -3794,6 +4509,22 @@ mod tests {
             slash_commands: None,
         };
         (session, turn_context)
+    }
+
+    fn assert_plan_prompt(item: &ResponseItem) {
+        match item {
+            ResponseItem::Message { role, content, .. } => {
+                assert_eq!(role, "user");
+                assert!(content.iter().any(|ci| {
+                    matches!(
+                        ci,
+                        ContentItem::InputText { text }
+                        if text == PLAN_MODE_SYSTEM_PROMPT
+                    )
+                }));
+            }
+            other => panic!("expected plan mode prompt, got {other:?}"),
+        }
     }
 
     fn sample_rollout(

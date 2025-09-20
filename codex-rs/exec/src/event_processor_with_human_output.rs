@@ -542,6 +542,12 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 ts_println!(self, "explanation: {explanation:?}");
                 ts_println!(self, "plan: {plan:?}");
             }
+            EventMsg::PlanModeActivated(_)
+            | EventMsg::PlanModeUpdated(_)
+            | EventMsg::PlanModeExited(_)
+            | EventMsg::PlanModeApplied(_) => {
+                // CLI output remains unchanged for plan mode lifecycle events.
+            }
             EventMsg::GetHistoryEntryResponse(_) => {
                 // Currently ignored in exec output.
             }

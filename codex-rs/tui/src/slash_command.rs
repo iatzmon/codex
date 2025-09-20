@@ -21,6 +21,9 @@ pub enum SlashCommand {
     Help,
     New,
     Init,
+    Plan,
+    ExitPlan,
+    ApplyPlan,
     Compact,
     Diff,
     Mention,
@@ -38,6 +41,9 @@ impl SlashCommand {
         match self {
             SlashCommand::New => "start a new chat during a conversation",
             SlashCommand::Init => "create an AGENTS.md file with instructions for Codex",
+            SlashCommand::Plan => "enter read-only Plan Mode to capture a plan",
+            SlashCommand::ExitPlan => "exit Plan Mode and restore the previous approval policy",
+            SlashCommand::ApplyPlan => "apply the captured plan and choose the next approval mode",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
             SlashCommand::Quit => "exit Codex",
             SlashCommand::Diff => "show git diff (including untracked files)",
@@ -64,6 +70,9 @@ impl SlashCommand {
         match self {
             SlashCommand::New
             | SlashCommand::Init
+            | SlashCommand::Plan
+            | SlashCommand::ExitPlan
+            | SlashCommand::ApplyPlan
             | SlashCommand::Compact
             | SlashCommand::Model
             | SlashCommand::Approvals

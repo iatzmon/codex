@@ -68,6 +68,9 @@ pub(crate) enum AppEvent {
     /// Forwarded conversation history snapshot from the current conversation.
     ConversationHistory(ConversationPathResponseEvent),
 
+    /// User chose to refine the current plan instead of applying it.
+    PlanModeRefineRequested,
+
     #[cfg(feature = "slash_commands")]
     CustomSlashCommandsReloaded {
         commands: Vec<CustomSlashCommand>,

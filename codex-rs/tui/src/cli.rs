@@ -50,6 +50,10 @@ pub struct Cli {
     #[arg(long = "ask-for-approval", short = 'a')]
     pub approval_policy: Option<ApprovalModeCliArg>,
 
+    /// Start Codex in Plan Mode without mutating the workspace.
+    #[arg(long = "plan", default_value_t = false)]
+    pub plan: bool,
+
     /// Convenience alias for low-friction sandboxed automatic execution (-a on-failure, --sandbox workspace-write).
     #[arg(long = "full-auto", default_value_t = false)]
     pub full_auto: bool,

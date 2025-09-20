@@ -42,7 +42,11 @@ pub(crate) fn should_persist_event_msg(ev: &EventMsg) -> bool {
         | EventMsg::TokenCount(_)
         | EventMsg::EnteredReviewMode(_)
         | EventMsg::ExitedReviewMode(_)
-        | EventMsg::TurnAborted(_) => true,
+        | EventMsg::TurnAborted(_)
+        | EventMsg::PlanModeActivated(_)
+        | EventMsg::PlanModeUpdated(_)
+        | EventMsg::PlanModeExited(_)
+        | EventMsg::PlanModeApplied(_) => true,
         EventMsg::Error(_)
         | EventMsg::TaskStarted(_)
         | EventMsg::TaskComplete(_)

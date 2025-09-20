@@ -70,22 +70,30 @@ pub(crate) async fn handle_update_plan(
     call_id: String,
 ) -> ResponseInputItem {
     match parse_update_plan_arguments(arguments, &call_id) {
-        Ok(args) => {
-            let output = ResponseInputItem::FunctionCallOutput {
+        Ok(args) => match session.apply_plan_tool_update(&sub_id, &args).await {
+            Some(()) => {
+                session
+                    .send_event(Event {
+                        id: sub_id.to_string(),
+                        msg: EventMsg::PlanUpdate(args),
+                    })
+                    .await;
+                ResponseInputItem::FunctionCallOutput {
+                    call_id,
+                    output: FunctionCallOutputPayload {
+                        content: "Plan updated".to_string(),
+                        success: Some(true),
+                    },
+                }
+            }
+            None => ResponseInputItem::FunctionCallOutput {
                 call_id,
                 output: FunctionCallOutputPayload {
-                    content: "Plan updated".to_string(),
-                    success: Some(true),
+                    content: "Plan Mode is not active".to_string(),
+                    success: Some(false),
                 },
-            };
-            session
-                .send_event(Event {
-                    id: sub_id.to_string(),
-                    msg: EventMsg::PlanUpdate(args),
-                })
-                .await;
-            output
-        }
+            },
+        },
         Err(output) => *output,
     }
 }

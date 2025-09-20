@@ -86,6 +86,15 @@ impl CliConfigOverrides {
         }
         Ok(())
     }
+    /// Return only the overrides that are scoped to `plan_mode.*`.
+    pub fn parse_plan_mode_overrides(&self) -> Result<Vec<(String, Value)>, String> {
+        self.parse_overrides().map(|overrides| {
+            overrides
+                .into_iter()
+                .filter(|(key, _)| key.starts_with("plan_mode."))
+                .collect()
+        })
+    }
 }
 
 /// Apply a single override onto `root`, creating intermediate objects as

@@ -1,0 +1,211 @@
+openapi: 3.1.0
+info:
+  title: Codex CLI Plan Mode Contracts
+  version: 0.1.0
+  description: >-
+    Interaction contracts for activating, using, and exiting Plan Mode in Codex CLI.
+servers:
+  - url: cli://codex
+    description: Logical CLI command channel (not HTTP).
+paths:
+  /commands/plan:
+    post:
+      summary: Activate Plan Mode
+      description: Enter read-only planning state via `/plan` command or `--plan` flag.
+      requestBody:
+        required: false
+      responses:
+        '200':
+          description: Plan Mode activated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanModeSession'
+        '409':
+          description: Plan Mode already active.
+        '422':
+          description: Activation rejected because required configuration is missing.
+  /commands/exit-plan:
+    post:
+      summary: Exit Plan Mode without applying plan.
+      responses:
+        '200':
+          description: Previous approval mode restored.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  previous_mode:
+                    type: string
+                    description: Approval mode restored.
+                    enum: [on_request, on_failure, never, unless_trusted]
+  /commands/apply-plan:
+    post:
+      summary: Exit Plan Mode and stage plan for execution.
+      parameters:
+        - name: mode
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [on_request, on_failure, never, unless_trusted]
+          description: Target approval mode override.
+      responses:
+        '200':
+          description: Plan applied and approval mode switched.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  target_mode:
+                    type: string
+                    description: Approval mode that will govern subsequent actions.
+                    enum: [on_request, on_failure, never, unless_trusted]
+                  plan_entries:
+                    type: integer
+                    description: Number of plan entries injected into next action.
+        '400':
+          description: Invalid mode specified.
+        '409':
+          description: Plan Mode not active.
+  /events/plan-update:
+    post:
+      summary: Append plan entry generated from a disallowed action.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlanUpdate'
+      responses:
+        '202':
+          description: Plan entry recorded.
+components:
+  schemas:
+    PlanModeSession:
+      type: object
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        entered_from:
+          type: string
+          description: Approval policy active before Plan Mode.
+          enum: [on_request, on_failure, never, unless_trusted]
+        allowed_tools:
+          type: array
+          items:
+            type: string
+        plan_artifact:
+          $ref: '#/components/schemas/PlanArtifact'
+    PlanArtifact:
+      type: object
+      required:
+        [
+          title,
+          objectives,
+          constraints,
+          assumptions,
+          approach,
+          steps,
+          affected_areas,
+          risks,
+          alternatives,
+          next_actions,
+          tests,
+          rollback,
+          success_criteria,
+        ]
+      properties:
+        title:
+          type: string
+        objectives:
+          type: array
+          items:
+            type: string
+        constraints:
+          type: array
+          items:
+            type: string
+        assumptions:
+          type: array
+          items:
+            type: string
+        approach:
+          type: array
+          items:
+            type: string
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlanEntry'
+        affected_areas:
+          type: array
+          items:
+            type: string
+        risks:
+          type: array
+          items:
+            type: string
+        alternatives:
+          type: array
+          items:
+            type: string
+        tests:
+          type: array
+          items:
+            type: string
+        next_actions:
+          type: array
+          items:
+            type: string
+        rollback:
+          type: array
+          items:
+            type: string
+        success_criteria:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          description: Optional template/model metadata for the plan artifact.
+          properties:
+            template:
+              type: string
+            model:
+              type: string
+            updated_at:
+              type: string
+              format: date-time
+          additionalProperties: false
+    PlanEntry:
+      type: object
+      required: [sequence, entry_type, summary, created_at]
+      properties:
+        sequence:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 65535
+        entry_type:
+          type: string
+          enum: [command, file_change, research, decision]
+        summary:
+          type: string
+        details:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    PlanUpdate:
+      type: object
+      properties:
+        explanation:
+          type: string
+        plan:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlanEntry'

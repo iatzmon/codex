@@ -15,6 +15,7 @@ use codex_core::ConversationManager;
 use codex_core::config::Config;
 use codex_core::config::persist_model_selection;
 use codex_core::model_family::find_family_for_model;
+use codex_core::protocol::Op;
 use codex_core::protocol::TokenUsage;
 use codex_core::protocol_config_types::ReasoningEffort as ReasoningEffortConfig;
 use color_eyre::eyre::Result;
@@ -22,6 +23,7 @@ use color_eyre::eyre::WrapErr;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
+use crossterm::event::KeyModifiers;
 use crossterm::terminal::supports_keyboard_enhancement;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
@@ -311,6 +313,9 @@ impl App {
             AppEvent::ConversationHistory(ev) => {
                 self.on_conversation_history_for_backtrack(tui, ev).await?;
             }
+            AppEvent::PlanModeRefineRequested => {
+                self.chat_widget.on_plan_mode_refine_requested();
+            }
             AppEvent::ExitRequest => {
                 return Ok(false);
             }
@@ -406,8 +411,28 @@ impl App {
         self.config.model_reasoning_effort = effort;
     }
 
+    pub(crate) fn toggle_plan_mode(&mut self) {
+        if self.backtrack.primed {
+            self.reset_backtrack_state();
+        }
+        let op = if self.chat_widget.is_plan_mode_active() {
+            Op::ExitPlanMode
+        } else {
+            Op::EnterPlanMode
+        };
+        self.app_event_tx.send(AppEvent::CodexOp(op));
+    }
+
     async fn handle_key_event(&mut self, tui: &mut tui::Tui, key_event: KeyEvent) {
         match key_event {
+            KeyEvent {
+                code: KeyCode::Char('p'),
+                modifiers: KeyModifiers::CONTROL,
+                kind: KeyEventKind::Press,
+                ..
+            } => {
+                self.toggle_plan_mode();
+            }
             KeyEvent {
                 code: KeyCode::Char('t'),
                 modifiers: crossterm::event::KeyModifiers::CONTROL,
@@ -475,12 +500,23 @@ mod tests {
     use codex_core::AuthManager;
     use codex_core::CodexAuth;
     use codex_core::ConversationManager;
+    use codex_core::protocol::AskForApproval;
+    use codex_core::protocol::Event;
+    use codex_core::protocol::EventMsg;
+    use codex_protocol::plan_mode::PlanArtifactPayload;
+    use codex_protocol::plan_mode::PlanModeActivatedEvent;
+    use codex_protocol::plan_mode::PlanModeSessionPayload;
     use ratatui::text::Line;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
+    use uuid::Uuid;
 
-    fn make_test_app() -> App {
-        let (chat_widget, app_event_tx, _rx, _op_rx) = make_chatwidget_manual_with_sender();
+    fn make_test_app_with_channels() -> (
+        App,
+        tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+        tokio::sync::mpsc::UnboundedReceiver<Op>,
+    ) {
+        let (chat_widget, app_event_tx, rx, op_rx) = make_chatwidget_manual_with_sender();
         let config = chat_widget.config_ref().clone();
 
         let server = Arc::new(ConversationManager::with_auth(CodexAuth::from_api_key(
@@ -490,7 +526,7 @@ mod tests {
             AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
         let file_search = FileSearchManager::new(config.cwd.clone(), app_event_tx.clone());
 
-        App {
+        let app = App {
             server,
             app_event_tx,
             chat_widget,
@@ -507,7 +543,14 @@ mod tests {
             enhanced_keys_supported: false,
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             backtrack: BacktrackState::default(),
-        }
+        };
+
+        (app, rx, op_rx)
+    }
+
+    fn make_test_app() -> App {
+        let (app, _rx, _op_rx) = make_test_app_with_channels();
+        app
     }
 
     #[test]
@@ -527,5 +570,60 @@ mod tests {
             app.chat_widget.config_ref().model_reasoning_effort,
             Some(ReasoningEffortConfig::High)
         );
+    }
+
+    #[test]
+    fn toggle_plan_mode_sends_enter_and_exit_ops() {
+        let (mut app, mut rx, _op_rx) = make_test_app_with_channels();
+
+        while rx.try_recv().is_ok() {}
+
+        app.backtrack.primed = true;
+        app.toggle_plan_mode();
+
+        let event = rx.try_recv().expect("expected EnterPlanMode op");
+        match event {
+            AppEvent::CodexOp(Op::EnterPlanMode) => {}
+            other => panic!("unexpected event: {:?}", other),
+        }
+        assert!(!app.backtrack.primed);
+
+        let plan = PlanModeSessionPayload {
+            session_id: Uuid::nil(),
+            entered_from: AskForApproval::OnRequest,
+            allowed_tools: Vec::new(),
+            plan_artifact: PlanArtifactPayload {
+                title: "Test".into(),
+                objectives: Vec::new(),
+                constraints: Vec::new(),
+                assumptions: Vec::new(),
+                approach: Vec::new(),
+                steps: Vec::new(),
+                affected_areas: Vec::new(),
+                risks: Vec::new(),
+                next_actions: Vec::new(),
+                tests: Vec::new(),
+                alternatives: Vec::new(),
+                rollback: Vec::new(),
+                success_criteria: Vec::new(),
+            },
+        };
+
+        app.chat_widget.handle_codex_event(Event {
+            id: "plan-activated".into(),
+            msg: EventMsg::PlanModeActivated(PlanModeActivatedEvent {
+                session: plan.clone(),
+            }),
+        });
+
+        while rx.try_recv().is_ok() {}
+
+        app.toggle_plan_mode();
+
+        let event = rx.try_recv().expect("expected ExitPlanMode op");
+        match event {
+            AppEvent::CodexOp(Op::ExitPlanMode) => {}
+            other => panic!("unexpected event: {:?}", other),
+        }
     }
 }

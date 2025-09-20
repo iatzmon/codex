@@ -19,6 +19,10 @@ use crate::models::ContentItem;
 use crate::models::ResponseItem;
 use crate::num_format::format_with_separators;
 use crate::parse_command::ParsedCommand;
+use crate::plan_mode::PlanModeActivatedEvent;
+use crate::plan_mode::PlanModeAppliedEvent;
+use crate::plan_mode::PlanModeExitedEvent;
+use crate::plan_mode::PlanModeUpdatedEvent;
 use crate::plan_tool::UpdatePlanArgs;
 use mcp_types::CallToolResult;
 use mcp_types::Tool as McpTool;
@@ -170,6 +174,18 @@ pub enum Op {
     /// The agent will use its existing context (either conversation history or previous response id)
     /// to generate a summary which will be returned as an AgentMessage event.
     Compact,
+
+    /// Enter Plan Mode without executing commands.
+    EnterPlanMode,
+
+    /// Exit Plan Mode and restore the prior approval mode.
+    ExitPlanMode,
+
+    /// Apply the captured plan and optionally override the approval mode.
+    ApplyPlanMode {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        target_mode: Option<AskForApproval>,
+    },
 
     /// Request a code review from the agent.
     Review { review_request: ReviewRequest },
@@ -504,6 +520,18 @@ pub enum EventMsg {
 
     /// List of custom prompts available to the agent.
     ListCustomPromptsResponse(ListCustomPromptsResponseEvent),
+
+    /// Plan Mode lifecycle notification when the session enters planning.
+    PlanModeActivated(PlanModeActivatedEvent),
+
+    /// Plan Mode session updated (e.g., new entries or metadata changes).
+    PlanModeUpdated(PlanModeUpdatedEvent),
+
+    /// Plan Mode exited without applying the plan artifact.
+    PlanModeExited(PlanModeExitedEvent),
+
+    /// Plan Mode applied and transitioning back to execution.
+    PlanModeApplied(PlanModeAppliedEvent),
 
     PlanUpdate(UpdatePlanArgs),
 

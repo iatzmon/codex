@@ -11,6 +11,7 @@ use crate::protocol::McpToolCallBeginEvent;
 use crate::protocol::McpToolCallEndEvent;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
+use mcp_types::CallToolResult;
 
 /// Handles the specified tool call dispatches the appropriate
 /// `McpToolCallBegin` and `McpToolCallEnd` events to the `Session`.
@@ -25,21 +26,46 @@ pub(crate) async fn handle_mcp_tool_call(
 ) -> ResponseInputItem {
     // Parse the `arguments` as JSON. An empty string is OK, but invalid JSON
     // is not.
-    let arguments_value = if arguments.trim().is_empty() {
-        None
+    let parsed_arguments = if arguments.trim().is_empty() {
+        Ok(None)
     } else {
-        match serde_json::from_str::<serde_json::Value>(&arguments) {
-            Ok(value) => Some(value),
-            Err(e) => {
-                error!("failed to parse tool call arguments: {e}");
-                return ResponseInputItem::FunctionCallOutput {
-                    call_id: call_id.clone(),
-                    output: FunctionCallOutputPayload {
-                        content: format!("err: {e}"),
-                        success: Some(false),
-                    },
-                };
-            }
+        serde_json::from_str::<serde_json::Value>(&arguments).map(Some)
+    };
+
+    let arguments_value = match parsed_arguments {
+        Ok(value) => value,
+        Err(e) => {
+            error!("failed to parse tool call arguments: {e}");
+            let invocation = McpInvocation {
+                server: server.clone(),
+                tool: tool_name.clone(),
+                arguments: None,
+            };
+            let begin = EventMsg::McpToolCallBegin(McpToolCallBeginEvent {
+                call_id: call_id.clone(),
+                invocation: invocation.clone(),
+            });
+            notify_mcp_tool_call_event(sess, sub_id, begin).await;
+
+            let start = Instant::now();
+            let result: Result<CallToolResult, String> = Err(format!(
+                "tool call error: failed to parse tool call arguments: {e}"
+            ));
+            let end = EventMsg::McpToolCallEnd(McpToolCallEndEvent {
+                call_id: call_id.clone(),
+                invocation,
+                duration: start.elapsed(),
+                result: result.clone(),
+            });
+            notify_mcp_tool_call_event(sess, sub_id, end).await;
+
+            return ResponseInputItem::FunctionCallOutput {
+                call_id,
+                output: FunctionCallOutputPayload {
+                    content: format!("err: {e}"),
+                    success: Some(false),
+                },
+            };
         }
     };
 
@@ -58,7 +84,13 @@ pub(crate) async fn handle_mcp_tool_call(
     let start = Instant::now();
     // Perform the tool call.
     let result = sess
-        .call_tool(&server, &tool_name, arguments_value.clone(), timeout)
+        .call_tool(
+            sub_id,
+            &server,
+            &tool_name,
+            arguments_value.clone(),
+            timeout,
+        )
         .await
         .map_err(|e| format!("tool call error: {e}"));
     let tool_call_end_event = EventMsg::McpToolCallEnd(McpToolCallEndEvent {
@@ -68,7 +100,7 @@ pub(crate) async fn handle_mcp_tool_call(
         result: result.clone(),
     });
 
-    notify_mcp_tool_call_event(sess, sub_id, tool_call_end_event.clone()).await;
+    notify_mcp_tool_call_event(sess, sub_id, tool_call_end_event).await;
 
     ResponseInputItem::McpToolCallOutput { call_id, result }
 }
