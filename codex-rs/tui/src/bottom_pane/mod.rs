@@ -263,10 +263,20 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub(crate) fn set_placeholder_text(&mut self, text: String) {
+        self.composer.set_placeholder_text(text);
+        self.request_redraw();
+    }
+
     /// Get the current composer text (for tests and programmatic checks).
     #[cfg(test)]
     pub(crate) fn composer_text(&self) -> String {
         self.composer.current_text()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn placeholder_text(&self) -> &str {
+        self.composer.placeholder_text()
     }
 
     /// Update the animated header shown to the left of the brackets in the

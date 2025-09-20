@@ -78,6 +78,7 @@ pub(crate) async fn handle_update_plan(
                     success: Some(true),
                 },
             };
+            session.apply_plan_tool_update(&sub_id, &args).await;
             session
                 .send_event(Event {
                     id: sub_id.to_string(),

@@ -14,6 +14,7 @@ fn apply_plan_injects_artifact_and_overrides_mode() {
         AskForApproval::OnRequest,
         vec![ToolCapability::new("fs.read", ToolMode::ReadOnly)],
         &PlanModeConfig::default(),
+        true,
     );
 
     session.begin_apply(Some(AskForApproval::OnFailure));

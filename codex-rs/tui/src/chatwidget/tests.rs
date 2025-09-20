@@ -14,6 +14,7 @@ use codex_core::protocol::AgentMessageEvent;
 use codex_core::protocol::AgentReasoningDeltaEvent;
 use codex_core::protocol::AgentReasoningEvent;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
+use codex_core::protocol::AskForApproval;
 use codex_core::protocol::Event;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::ExecApprovalRequestEvent;
@@ -27,17 +28,24 @@ use codex_core::protocol::StreamErrorEvent;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TaskStartedEvent;
 use codex_protocol::mcp_protocol::ConversationId;
+use codex_protocol::plan_mode::PlanArtifactPayload;
+use codex_protocol::plan_mode::PlanModeActivatedEvent;
+use codex_protocol::plan_mode::PlanModeAppliedEvent;
+use codex_protocol::plan_mode::PlanModeSessionPayload;
+use codex_protocol::plan_mode::PlanModeUpdatedEvent;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use insta::assert_snapshot;
 use pretty_assertions::assert_eq;
+use ratatui::buffer::Buffer;
 use std::fs::File;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
 use tokio::sync::mpsc::unbounded_channel;
+use uuid::Uuid;
 
 fn test_config() -> Config {
     // Use base defaults to avoid depending on host state.
@@ -258,6 +266,10 @@ fn make_chatwidget_manual() -> (
         queued_user_messages: VecDeque::new(),
         suppress_session_configured_redraw: false,
         pending_notification: None,
+        plan_mode_session: None,
+        plan_mode_dialog_shown: false,
+        plan_mode_dialog_pending: false,
+        default_placeholder: "Ask Codex to do anything".to_string(),
     };
     (widget, rx, op_rx)
 }
@@ -1902,4 +1914,271 @@ printf 'fenced within fenced\n'
     }
     let visual = vt_lines.join("\n");
     assert_snapshot!(visual);
+}
+
+#[test]
+fn plan_header_includes_allowed_tools() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let payload = PlanModeSessionPayload {
+        session_id: Uuid::new_v4(),
+        entered_from: AskForApproval::OnRequest,
+        allowed_tools: vec!["attachments.read".to_string()],
+        plan_artifact: PlanArtifactPayload {
+            title: String::new(),
+            objectives: Vec::new(),
+            constraints: Vec::new(),
+            assumptions: Vec::new(),
+            approach: Vec::new(),
+            steps: Vec::new(),
+            affected_areas: Vec::new(),
+            risks: Vec::new(),
+            alternatives: Vec::new(),
+            next_actions: Vec::new(),
+            tests: Vec::new(),
+            rollback: Vec::new(),
+            success_criteria: Vec::new(),
+        },
+    };
+
+    chat.plan_mode_session = Some(payload);
+    let session = chat.plan_mode_session.as_ref().unwrap();
+    let lines = chat.plan_mode_header_lines(session);
+    let rendered: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.to_string())
+                .collect::<String>()
+        })
+        .collect();
+
+    assert!(
+        rendered
+            .first()
+            .expect("header line should exist")
+            .contains("PLAN"),
+        "header should include PLAN badge"
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line.contains("attachments.read")),
+        "header should list allowed tools"
+    );
+}
+
+#[test]
+fn plan_header_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+    let payload = PlanModeSessionPayload {
+        session_id: Uuid::new_v4(),
+        entered_from: AskForApproval::OnRequest,
+        allowed_tools: vec!["attachments.read".to_string(), "fs.read".to_string()],
+        plan_artifact: PlanArtifactPayload {
+            title: "Snapshot Test".to_string(),
+            objectives: Vec::new(),
+            constraints: Vec::new(),
+            assumptions: Vec::new(),
+            approach: Vec::new(),
+            steps: Vec::new(),
+            affected_areas: Vec::new(),
+            risks: Vec::new(),
+            alternatives: Vec::new(),
+            next_actions: Vec::new(),
+            tests: Vec::new(),
+            rollback: Vec::new(),
+            success_criteria: Vec::new(),
+        },
+    };
+
+    chat.plan_mode_session = Some(payload);
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 2));
+    chat.render_plan_header(Rect::new(0, 0, 60, 2), &mut buffer);
+
+    let mut rows: Vec<String> = Vec::new();
+    for y in 0..2 {
+        let mut row = String::new();
+        for x in 0..60 {
+            row.push_str(buffer[(x, y)].symbol());
+        }
+        rows.push(row.trim_end().to_string());
+    }
+
+    let snapshot = rows.join("\n");
+    assert_snapshot!("plan_header", snapshot);
+}
+
+#[test]
+fn plan_mode_updates_placeholder_text() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+
+    assert_eq!(
+        chat.bottom_pane.placeholder_text(),
+        chat.default_placeholder
+    );
+
+    let mut payload = PlanModeSessionPayload {
+        session_id: Uuid::new_v4(),
+        entered_from: AskForApproval::OnRequest,
+        allowed_tools: Vec::new(),
+        plan_artifact: PlanArtifactPayload {
+            title: "New Feature".to_string(),
+            objectives: Vec::new(),
+            constraints: Vec::new(),
+            assumptions: Vec::new(),
+            approach: Vec::new(),
+            steps: Vec::new(),
+            affected_areas: Vec::new(),
+            risks: Vec::new(),
+            alternatives: Vec::new(),
+            next_actions: Vec::new(),
+            tests: Vec::new(),
+            rollback: Vec::new(),
+            success_criteria: Vec::new(),
+        },
+    };
+
+    chat.on_plan_mode_activated(PlanModeActivatedEvent {
+        session: payload.clone(),
+    });
+    assert_eq!(chat.bottom_pane.placeholder_text(), "Plan New Feature");
+
+    payload.plan_artifact.title = "Refactor Pipeline".to_string();
+    chat.on_plan_mode_updated(PlanModeUpdatedEvent { session: payload });
+    assert_eq!(
+        chat.bottom_pane.placeholder_text(),
+        "Plan Refactor Pipeline"
+    );
+
+    chat.on_plan_mode_applied(PlanModeAppliedEvent {
+        target_mode: AskForApproval::OnRequest,
+        plan_entries: 0,
+    });
+    assert_eq!(
+        chat.bottom_pane.placeholder_text(),
+        chat.default_placeholder
+    );
+}
+
+#[test]
+fn plan_mode_dialog_shows_after_update() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let _ = drain_insert_history(&mut rx);
+
+    let mut session = PlanModeSessionPayload {
+        session_id: Uuid::new_v4(),
+        entered_from: AskForApproval::OnRequest,
+        allowed_tools: vec!["attachments.read".into()],
+        plan_artifact: PlanArtifactPayload {
+            title: "Feature Plan".to_string(),
+            objectives: Vec::new(),
+            constraints: Vec::new(),
+            assumptions: Vec::new(),
+            approach: Vec::new(),
+            steps: Vec::new(),
+            affected_areas: Vec::new(),
+            risks: Vec::new(),
+            alternatives: Vec::new(),
+            next_actions: Vec::new(),
+            tests: Vec::new(),
+            rollback: Vec::new(),
+            success_criteria: Vec::new(),
+        },
+    };
+
+    chat.handle_codex_event(Event {
+        id: "plan-activate".into(),
+        msg: EventMsg::PlanModeActivated(PlanModeActivatedEvent {
+            session: session.clone(),
+        }),
+    });
+    assert!(!chat.plan_mode_dialog_shown());
+
+    session.plan_artifact.next_actions = vec!["Outline approach".into()];
+
+    chat.handle_codex_event(Event {
+        id: "plan-update".into(),
+        msg: EventMsg::PlanModeUpdated(PlanModeUpdatedEvent { session }),
+    });
+    assert!(!chat.plan_mode_dialog_shown());
+
+    chat.handle_codex_event(Event {
+        id: "task-complete".into(),
+        msg: EventMsg::TaskComplete(TaskCompleteEvent {
+            last_agent_message: None,
+        }),
+    });
+
+    assert!(chat.plan_mode_dialog_shown());
+}
+
+#[test]
+fn plan_mode_refine_resets_dialog_and_reopens_on_update() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    let _ = drain_insert_history(&mut rx);
+
+    let session = PlanModeSessionPayload {
+        session_id: Uuid::new_v4(),
+        entered_from: AskForApproval::OnRequest,
+        allowed_tools: Vec::new(),
+        plan_artifact: PlanArtifactPayload {
+            title: "Initial Plan".to_string(),
+            objectives: Vec::new(),
+            constraints: Vec::new(),
+            assumptions: Vec::new(),
+            approach: Vec::new(),
+            steps: Vec::new(),
+            affected_areas: Vec::new(),
+            risks: Vec::new(),
+            alternatives: Vec::new(),
+            next_actions: vec!["Assess requirements".into()],
+            tests: Vec::new(),
+            rollback: Vec::new(),
+            success_criteria: Vec::new(),
+        },
+    };
+
+    chat.handle_codex_event(Event {
+        id: "plan-activate".into(),
+        msg: EventMsg::PlanModeActivated(PlanModeActivatedEvent {
+            session: session.clone(),
+        }),
+    });
+    assert!(!chat.plan_mode_dialog_shown());
+
+    chat.on_plan_mode_refine_requested();
+    assert!(!chat.plan_mode_dialog_shown());
+
+    let update = UpdatePlanArgs {
+        explanation: Some("Refined based on feedback".into()),
+        plan: vec![PlanItemArg {
+            step: "Revise scope".into(),
+            status: StepStatus::InProgress,
+        }],
+    };
+    chat.handle_codex_event(Event {
+        id: "plan-update".into(),
+        msg: EventMsg::PlanUpdate(update.clone()),
+    });
+
+    let mut updated_session = session.clone();
+    updated_session.plan_artifact.next_actions = vec!["Revise scope".into()];
+    chat.handle_codex_event(Event {
+        id: "plan-mode-updated".into(),
+        msg: EventMsg::PlanModeUpdated(PlanModeUpdatedEvent {
+            session: updated_session,
+        }),
+    });
+
+    assert!(!chat.plan_mode_dialog_shown());
+
+    chat.handle_codex_event(Event {
+        id: "task-complete".into(),
+        msg: EventMsg::TaskComplete(TaskCompleteEvent {
+            last_agent_message: None,
+        }),
+    });
+
+    assert!(chat.plan_mode_dialog_shown());
 }

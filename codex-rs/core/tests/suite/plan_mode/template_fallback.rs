@@ -15,6 +15,7 @@ fn warns_when_plan_template_missing() {
         AskForApproval::OnRequest,
         vec![ToolCapability::new("fs.read", ToolMode::ReadOnly)],
         &PlanModeConfig::default(),
+        true,
     );
 
     let metadata = PlanArtifactMetadata {

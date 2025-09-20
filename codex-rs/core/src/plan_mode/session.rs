@@ -136,7 +136,7 @@ impl PlanModeSession {
         }
     }
 
-    pub fn is_shell_allowed(&self, command: &str) -> bool {
+    pub fn is_shell_allowed(&self, command: &[String]) -> bool {
         self.allow_list.matches_shell_command(command)
     }
 

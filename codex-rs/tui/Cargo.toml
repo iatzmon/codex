@@ -104,3 +104,4 @@ insta = "1.43.2"
 pretty_assertions = "1"
 rand = "0.9"
 vt100 = "0.16.2"
+uuid = { version = "1", features = ["v4"] }

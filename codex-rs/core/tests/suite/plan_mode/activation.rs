@@ -29,6 +29,7 @@ fn activation_flow_enters_plan_state() {
         AskForApproval::OnRequest,
         sample_tools(),
         &config,
+        true,
     );
 
     assert!(

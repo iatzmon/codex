@@ -15,6 +15,7 @@ use crate::model_family::find_family_for_model;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::built_in_model_providers;
 use crate::openai_model_info::get_model_info;
+use crate::plan_mode::PlanModeConfig;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
 use anyhow::Context;
@@ -186,6 +187,8 @@ pub struct Config {
 
     /// Include the `view_image` tool that lets the agent attach a local image path to context.
     pub include_view_image_tool: bool,
+
+    pub plan_mode: PlanModeConfig,
 
     /// The active profile name used to derive this `Config` (if any).
     pub active_profile: Option<String>,
@@ -701,6 +704,9 @@ pub struct ConfigToml {
     /// Nested tools section for feature toggles
     pub tools: Option<ToolsToml>,
 
+    /// Plan Mode defaults
+    pub plan_mode: Option<PlanModeToml>,
+
     /// When true, disables burst-paste detection for typed input entirely.
     /// All characters are inserted as they are received, and no buffering
     /// or placeholder replacement will occur for fast keypress bursts.
@@ -735,6 +741,18 @@ pub struct ProjectConfig {
     pub trust_level: Option<String>,
 }
 
+#[derive(Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlanModeToml {
+    #[serde(default)]
+    pub plan_enabled: Option<bool>,
+    #[serde(default)]
+    pub allowed_read_only_tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub planning_model: Option<String>,
+    #[serde(default)]
+    pub apply_requires_confirmation: Option<bool>,
+}
+
 #[derive(Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct ToolsToml {
     #[serde(default, alias = "web_search_request")]
@@ -750,6 +768,17 @@ impl From<ToolsToml> for Tools {
         Self {
             web_search: tools_toml.web_search,
             view_image: tools_toml.view_image,
+        }
+    }
+}
+
+impl From<PlanModeToml> for PlanModeConfig {
+    fn from(value: PlanModeToml) -> Self {
+        Self {
+            plan_enabled: value.plan_enabled.unwrap_or(false),
+            allowed_read_only_tools: value.allowed_read_only_tools.unwrap_or_default(),
+            planning_model: value.planning_model,
+            apply_requires_confirmation: value.apply_requires_confirmation.unwrap_or(true),
         }
     }
 }
@@ -845,6 +874,7 @@ pub struct ConfigOverrides {
     pub include_view_image_tool: Option<bool>,
     pub show_raw_agent_reasoning: Option<bool>,
     pub tools_web_search_request: Option<bool>,
+    pub plan_mode_enabled: Option<bool>,
 }
 
 impl Config {
@@ -873,6 +903,7 @@ impl Config {
             include_view_image_tool,
             show_raw_agent_reasoning,
             tools_web_search_request: override_tools_web_search_request,
+            plan_mode_enabled,
         } = overrides;
 
         let active_profile_name = config_profile_key
@@ -992,6 +1023,16 @@ impl Config {
             .or(cfg.review_model)
             .unwrap_or_else(default_review_model);
 
+        let mut plan_mode_config = cfg
+            .plan_mode
+            .clone()
+            .map(PlanModeConfig::from)
+            .unwrap_or_default();
+
+        if let Some(enabled) = plan_mode_enabled {
+            plan_mode_config.plan_enabled = enabled;
+        }
+
         let config = Self {
             model,
             review_model,
@@ -1046,6 +1087,7 @@ impl Config {
                 .experimental_use_unified_exec_tool
                 .unwrap_or(false),
             include_view_image_tool,
+            plan_mode: plan_mode_config,
             active_profile: active_profile_name,
             disable_paste_burst: cfg.disable_paste_burst.unwrap_or(false),
             tui_notifications: cfg
@@ -1614,6 +1656,7 @@ model_verbosity = "high"
                 use_experimental_streamable_shell_tool: false,
                 use_experimental_unified_exec_tool: false,
                 include_view_image_tool: true,
+                plan_mode: PlanModeConfig::default(),
                 active_profile: Some("o3".to_string()),
                 disable_paste_burst: false,
                 tui_notifications: Default::default(),
@@ -1672,6 +1715,7 @@ model_verbosity = "high"
             use_experimental_streamable_shell_tool: false,
             use_experimental_unified_exec_tool: false,
             include_view_image_tool: true,
+            plan_mode: PlanModeConfig::default(),
             active_profile: Some("gpt3".to_string()),
             disable_paste_burst: false,
             tui_notifications: Default::default(),
@@ -1745,6 +1789,7 @@ model_verbosity = "high"
             use_experimental_streamable_shell_tool: false,
             use_experimental_unified_exec_tool: false,
             include_view_image_tool: true,
+            plan_mode: PlanModeConfig::default(),
             active_profile: Some("zdr".to_string()),
             disable_paste_burst: false,
             tui_notifications: Default::default(),
@@ -1804,6 +1849,7 @@ model_verbosity = "high"
             use_experimental_streamable_shell_tool: false,
             use_experimental_unified_exec_tool: false,
             include_view_image_tool: true,
+            plan_mode: PlanModeConfig::default(),
             active_profile: Some("gpt5".to_string()),
             disable_paste_burst: false,
             tui_notifications: Default::default(),

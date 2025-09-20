@@ -9,6 +9,7 @@
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
+use codex_core::protocol::AskForApproval;
 use codex_core::protocol::Op;
 use codex_core::protocol::ReviewDecision;
 use crossterm::event::KeyCode;
@@ -31,6 +32,7 @@ use crate::app_event_sender::AppEventSender;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::history_cell;
 use crate::text_formatting::truncate_text;
+use codex_protocol::plan_mode::PlanModeSessionPayload;
 
 /// Request coming from the agent that needs user approval.
 pub(crate) enum ApprovalRequest {
@@ -44,16 +46,26 @@ pub(crate) enum ApprovalRequest {
         reason: Option<String>,
         grant_root: Option<PathBuf>,
     },
+    PlanMode {
+        session: PlanModeSessionPayload,
+    },
 }
 
 /// Options displayed in the *select* mode.
 ///
 /// The `key` is matched case-insensitively.
+#[derive(Clone, Copy)]
+enum SelectAction {
+    Review(ReviewDecision),
+    PlanApply(Option<AskForApproval>),
+    PlanRefine,
+}
+
 struct SelectOption {
     label: Line<'static>,
     description: &'static str,
     key: KeyCode,
-    decision: ReviewDecision,
+    action: SelectAction,
 }
 
 static COMMAND_SELECT_OPTIONS: LazyLock<Vec<SelectOption>> = LazyLock::new(|| {
@@ -62,19 +74,19 @@ static COMMAND_SELECT_OPTIONS: LazyLock<Vec<SelectOption>> = LazyLock::new(|| {
             label: Line::from(vec!["Y".underlined(), "es".into()]),
             description: "Approve and run the command",
             key: KeyCode::Char('y'),
-            decision: ReviewDecision::Approved,
+            action: SelectAction::Review(ReviewDecision::Approved),
         },
         SelectOption {
             label: Line::from(vec!["A".underlined(), "lways".into()]),
             description: "Approve the command for the remainder of this session",
             key: KeyCode::Char('a'),
-            decision: ReviewDecision::ApprovedForSession,
+            action: SelectAction::Review(ReviewDecision::ApprovedForSession),
         },
         SelectOption {
             label: Line::from(vec!["N".underlined(), "o, provide feedback".into()]),
             description: "Do not run the command; provide feedback",
             key: KeyCode::Char('n'),
-            decision: ReviewDecision::Abort,
+            action: SelectAction::Review(ReviewDecision::Abort),
         },
     ]
 });
@@ -85,13 +97,52 @@ static PATCH_SELECT_OPTIONS: LazyLock<Vec<SelectOption>> = LazyLock::new(|| {
             label: Line::from(vec!["Y".underlined(), "es".into()]),
             description: "Approve and apply the changes",
             key: KeyCode::Char('y'),
-            decision: ReviewDecision::Approved,
+            action: SelectAction::Review(ReviewDecision::Approved),
         },
         SelectOption {
             label: Line::from(vec!["N".underlined(), "o, provide feedback".into()]),
             description: "Do not apply the changes; provide feedback",
             key: KeyCode::Char('n'),
-            decision: ReviewDecision::Abort,
+            action: SelectAction::Review(ReviewDecision::Abort),
+        },
+    ]
+});
+
+static PLAN_SELECT_OPTIONS: LazyLock<Vec<SelectOption>> = LazyLock::new(|| {
+    vec![
+        SelectOption {
+            label: Line::from(vec!["Apply ".into(), "O".underlined(), "n-request".into()]),
+            description: "Apply the plan and keep approvals on-request",
+            key: KeyCode::Char('o'),
+            action: SelectAction::PlanApply(Some(AskForApproval::OnRequest)),
+        },
+        SelectOption {
+            label: Line::from(vec![
+                "Apply ".into(),
+                "U".underlined(),
+                "nless-trusted".into(),
+            ]),
+            description: "Apply the plan with the unless-trusted policy",
+            key: KeyCode::Char('u'),
+            action: SelectAction::PlanApply(Some(AskForApproval::UnlessTrusted)),
+        },
+        SelectOption {
+            label: Line::from(vec!["Apply On-".into(), "F".underlined(), "ailure".into()]),
+            description: "Apply the plan with the on-failure policy",
+            key: KeyCode::Char('f'),
+            action: SelectAction::PlanApply(Some(AskForApproval::OnFailure)),
+        },
+        SelectOption {
+            label: Line::from(vec!["Apply ".into(), "N".underlined(), "ever".into()]),
+            description: "Apply the plan with the never approval policy",
+            key: KeyCode::Char('n'),
+            action: SelectAction::PlanApply(Some(AskForApproval::Never)),
+        },
+        SelectOption {
+            label: Line::from(vec!["R".underlined(), "efine plan".into()]),
+            description: "Keep planning and provide more feedback",
+            key: KeyCode::Char('r'),
+            action: SelectAction::PlanRefine,
         },
     ]
 });
@@ -142,12 +193,35 @@ impl UserApprovalWidget {
 
                 Paragraph::new(contents).wrap(Wrap { trim: false })
             }
+            ApprovalRequest::PlanMode { session } => {
+                let mut contents: Vec<Line> = Vec::new();
+                let title = session.plan_artifact.title.trim();
+                let title = if title.is_empty() { "Plan" } else { title };
+                contents.push(Line::from(format!("Plan ready: {}", title)));
+                if !session.plan_artifact.next_actions.is_empty() {
+                    contents.push(Line::from("Next actions:"));
+                    for action in session.plan_artifact.next_actions.iter().take(3) {
+                        contents.push(Line::from(format!("  • {}", action)));
+                    }
+                    if session.plan_artifact.next_actions.len() > 3 {
+                        let remaining = session.plan_artifact.next_actions.len() - 3;
+                        contents.push(Line::from(format!("  • … and {} more", remaining)));
+                    }
+                }
+                if !session.allowed_tools.is_empty() {
+                    let tools = session.allowed_tools.join(", ");
+                    contents.push(Line::from(format!("Allowed tools: {}", tools)));
+                }
+                contents.push(Line::from("Select how to proceed with the plan."));
+                Paragraph::new(contents).wrap(Wrap { trim: false })
+            }
         };
 
         Self {
             select_options: match &approval_request {
                 ApprovalRequest::Exec { .. } => &COMMAND_SELECT_OPTIONS,
                 ApprovalRequest::ApplyPatch { .. } => &PATCH_SELECT_OPTIONS,
+                ApprovalRequest::PlanMode { .. } => &PLAN_SELECT_OPTIONS,
             },
             approval_request,
             app_event_tx,
@@ -186,7 +260,10 @@ impl UserApprovalWidget {
     /// Handle Ctrl-C pressed by the user while the modal is visible.
     /// Behaves like pressing Escape: abort the request and close the modal.
     pub(crate) fn on_ctrl_c(&mut self) {
-        self.send_decision(ReviewDecision::Abort);
+        match self.approval_request {
+            ApprovalRequest::PlanMode { .. } => self.send_plan_refine(),
+            _ => self.send_decision(ReviewDecision::Abort),
+        }
     }
 
     fn handle_select_key(&mut self, key_event: KeyEvent) {
@@ -200,11 +277,12 @@ impl UserApprovalWidget {
             }
             KeyCode::Enter => {
                 let opt = &self.select_options[self.selected_option];
-                self.send_decision(opt.decision);
+                self.activate_option(opt);
             }
-            KeyCode::Esc => {
-                self.send_decision(ReviewDecision::Abort);
-            }
+            KeyCode::Esc => match self.approval_request {
+                ApprovalRequest::PlanMode { .. } => self.send_plan_refine(),
+                _ => self.send_decision(ReviewDecision::Abort),
+            },
             other => {
                 let normalized = Self::normalize_keycode(other);
                 if let Some(opt) = self
@@ -212,10 +290,29 @@ impl UserApprovalWidget {
                     .iter()
                     .find(|opt| Self::normalize_keycode(opt.key) == normalized)
                 {
-                    self.send_decision(opt.decision);
+                    self.activate_option(opt);
                 }
             }
         }
+    }
+
+    fn activate_option(&mut self, option: &SelectOption) {
+        match option.action {
+            SelectAction::Review(decision) => self.send_decision(decision),
+            SelectAction::PlanApply(target_mode) => self.send_plan_apply(target_mode),
+            SelectAction::PlanRefine => self.send_plan_refine(),
+        }
+    }
+
+    fn send_plan_apply(&mut self, target_mode: Option<AskForApproval>) {
+        self.app_event_tx
+            .send(AppEvent::CodexOp(Op::ApplyPlanMode { target_mode }));
+        self.done = true;
+    }
+
+    fn send_plan_refine(&mut self) {
+        self.app_event_tx.send(AppEvent::PlanModeRefineRequested);
+        self.done = true;
     }
 
     fn send_decision(&mut self, decision: ReviewDecision) {
@@ -294,20 +391,24 @@ impl UserApprovalWidget {
             ApprovalRequest::ApplyPatch { .. } => {
                 // No history line for patch approval decisions.
             }
+            ApprovalRequest::PlanMode { .. } => {
+                // Plan mode approvals are handled separately.
+            }
         }
 
-        let op = match &self.approval_request {
-            ApprovalRequest::Exec { id, .. } => Op::ExecApproval {
+        if let Some(op) = match &self.approval_request {
+            ApprovalRequest::Exec { id, .. } => Some(Op::ExecApproval {
                 id: id.clone(),
                 decision,
-            },
-            ApprovalRequest::ApplyPatch { id, .. } => Op::PatchApproval {
+            }),
+            ApprovalRequest::ApplyPatch { id, .. } => Some(Op::PatchApproval {
                 id: id.clone(),
                 decision,
-            },
-        };
-
-        self.app_event_tx.send(AppEvent::CodexOp(op));
+            }),
+            ApprovalRequest::PlanMode { .. } => None,
+        } {
+            self.app_event_tx.send(AppEvent::CodexOp(op));
+        }
         self.done = true;
     }
 
@@ -357,6 +458,7 @@ impl WidgetRef for &UserApprovalWidget {
         let title = match &self.approval_request {
             ApprovalRequest::Exec { .. } => "Allow command?",
             ApprovalRequest::ApplyPatch { .. } => "Apply changes?",
+            ApprovalRequest::PlanMode { .. } => "Accept plan?",
         };
         Line::from(title).render(title_area, buf);
 
@@ -391,10 +493,37 @@ impl WidgetRef for &UserApprovalWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_core::protocol::AskForApproval;
+    use codex_protocol::plan_mode::PlanArtifactPayload;
+    use codex_protocol::plan_mode::PlanModeSessionPayload;
     use crossterm::event::KeyCode;
     use crossterm::event::KeyEvent;
     use crossterm::event::KeyModifiers;
     use tokio::sync::mpsc::unbounded_channel;
+    use uuid::Uuid;
+
+    fn make_plan_session_payload() -> PlanModeSessionPayload {
+        PlanModeSessionPayload {
+            session_id: Uuid::nil(),
+            entered_from: AskForApproval::OnRequest,
+            allowed_tools: vec!["shell".into()],
+            plan_artifact: PlanArtifactPayload {
+                title: "Improve workflow".into(),
+                objectives: Vec::new(),
+                constraints: Vec::new(),
+                assumptions: Vec::new(),
+                approach: Vec::new(),
+                steps: Vec::new(),
+                affected_areas: Vec::new(),
+                risks: Vec::new(),
+                next_actions: vec!["Document current process".into(), "Gather feedback".into()],
+                tests: Vec::new(),
+                alternatives: Vec::new(),
+                rollback: Vec::new(),
+                success_criteria: Vec::new(),
+            },
+        }
+    }
 
     #[test]
     fn lowercase_shortcut_is_accepted() {
@@ -444,5 +573,42 @@ mod tests {
                 ..
             })
         )));
+    }
+
+    #[test]
+    fn plan_apply_option_sends_apply_op() {
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let session = make_plan_session_payload();
+        let mut widget = UserApprovalWidget::new(ApprovalRequest::PlanMode { session }, tx);
+        widget.handle_key_event(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+        assert!(widget.is_complete());
+
+        let mut saw_apply = false;
+        while let Ok(event) = rx.try_recv() {
+            if let AppEvent::CodexOp(Op::ApplyPlanMode { target_mode }) = event {
+                assert_eq!(target_mode, Some(AskForApproval::OnRequest));
+                saw_apply = true;
+            }
+        }
+        assert!(saw_apply, "expected apply op to be sent");
+    }
+
+    #[test]
+    fn plan_refine_option_emits_refine_event() {
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let session = make_plan_session_payload();
+        let mut widget = UserApprovalWidget::new(ApprovalRequest::PlanMode { session }, tx);
+        widget.handle_key_event(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert!(widget.is_complete());
+
+        let mut saw_refine = false;
+        while let Ok(event) = rx.try_recv() {
+            if let AppEvent::PlanModeRefineRequested = event {
+                saw_refine = true;
+            }
+        }
+        assert!(saw_refine, "expected refine event");
     }
 }

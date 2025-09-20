@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::path::Path;
 
 use tracing::warn;
 use wildmatch::WildMatch;
@@ -84,8 +85,15 @@ impl PlanModeAllowList {
         self.tool_rules.iter().any(|rule| rule.matches(candidate))
     }
 
-    pub fn matches_shell_command(&self, command: &str) -> bool {
-        self.shell_rules.iter().any(|rule| rule.matches(command))
+    pub fn matches_shell_command(&self, command: &[String]) -> bool {
+        if command.is_empty() {
+            return false;
+        }
+
+        let candidates = shell_command_candidates(command);
+        self.shell_rules
+            .iter()
+            .any(|rule| candidates.iter().any(|candidate| rule.matches(candidate)))
     }
 }
 
@@ -152,5 +160,105 @@ fn push_entry(
         tool_rules.push(ToolRule::Glob(WildMatch::new(entry)));
     } else {
         tool_rules.push(ToolRule::Exact(entry.to_string()));
+    }
+}
+
+fn shell_command_candidates(command: &[String]) -> Vec<String> {
+    let mut candidates = Vec::new();
+    let joined = command.join(" ");
+    if !joined.is_empty() {
+        candidates.push(joined);
+    }
+
+    if let Some(stripped) = strip_shell_wrapper(command) {
+        let stripped_joined = stripped.join(" ");
+        if !stripped_joined.is_empty()
+            && !candidates
+                .iter()
+                .any(|existing| existing == &stripped_joined)
+        {
+            candidates.push(stripped_joined);
+        }
+    }
+
+    candidates
+}
+
+fn strip_shell_wrapper<'a>(command: &'a [String]) -> Option<&'a [String]> {
+    if command.is_empty() {
+        return None;
+    }
+
+    let mut slice = command;
+    loop {
+        let Some(first) = slice.first() else {
+            return None;
+        };
+        let Some(exe_name) = Path::new(first).file_name().and_then(|os| os.to_str()) else {
+            return None;
+        };
+        let exe_name = exe_name.to_ascii_lowercase();
+
+        if exe_name == "env" || exe_name == "env.exe" {
+            if slice.len() <= 1 {
+                return None;
+            }
+            slice = &slice[1..];
+            continue;
+        }
+
+        if !is_shell_executable(&exe_name) {
+            return None;
+        }
+
+        let flags = shell_command_flags(&exe_name);
+        if flags.is_empty() {
+            return if slice.len() > 1 {
+                Some(&slice[1..])
+            } else {
+                None
+            };
+        }
+
+        for (idx, arg) in slice.iter().enumerate().skip(1) {
+            if flags.iter().any(|flag| flag.eq_ignore_ascii_case(arg)) {
+                let rest = &slice[idx + 1..];
+                if rest.is_empty() {
+                    return None;
+                }
+                return Some(rest);
+            }
+        }
+
+        return None;
+    }
+}
+
+fn is_shell_executable(name: &str) -> bool {
+    matches!(
+        name,
+        "sh" | "bash"
+            | "zsh"
+            | "dash"
+            | "ksh"
+            | "ash"
+            | "busybox"
+            | "fish"
+            | "elvish"
+            | "pwsh"
+            | "powershell"
+            | "powershell.exe"
+            | "cmd"
+            | "cmd.exe"
+    )
+}
+
+fn shell_command_flags(shell: &str) -> &'static [&'static str] {
+    match shell {
+        "sh" | "bash" | "zsh" | "dash" | "ksh" | "ash" | "busybox" => &["-c", "-lc"],
+        "fish" | "elvish" => &["-c"],
+        "pwsh" | "powershell" | "powershell.exe" => &["-c", "-command", "-Command"],
+        "cmd" | "cmd.exe" => &["/c", "/C"],
+        _ => &[],
     }
 }

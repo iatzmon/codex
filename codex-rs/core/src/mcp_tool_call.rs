@@ -58,7 +58,13 @@ pub(crate) async fn handle_mcp_tool_call(
     let start = Instant::now();
     // Perform the tool call.
     let result = sess
-        .call_tool(&server, &tool_name, arguments_value.clone(), timeout)
+        .call_tool(
+            sub_id,
+            &server,
+            &tool_name,
+            arguments_value.clone(),
+            timeout,
+        )
         .await
         .map_err(|e| format!("tool call error: {e}"));
     let tool_call_end_event = EventMsg::McpToolCallEnd(McpToolCallEndEvent {

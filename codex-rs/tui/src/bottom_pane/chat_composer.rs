@@ -188,6 +188,15 @@ impl ChatComposer {
         self.token_usage_info = token_info;
     }
 
+    pub(crate) fn set_placeholder_text(&mut self, placeholder: String) {
+        self.placeholder_text = placeholder;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn placeholder_text(&self) -> &str {
+        &self.placeholder_text
+    }
+
     /// Record the history metadata advertised by `SessionConfiguredEvent` so
     /// that the composer can navigate cross-session history.
     pub(crate) fn set_history_metadata(&mut self, log_id: u64, entry_count: usize) {

@@ -6,11 +6,13 @@ use crate::pager_overlay::Overlay;
 use crate::tui;
 use crate::tui::TuiEvent;
 use codex_core::protocol::ConversationPathResponseEvent;
+use codex_core::protocol::Op;
 use codex_protocol::mcp_protocol::ConversationId;
 use color_eyre::eyre::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
+use crossterm::event::KeyModifiers;
 
 /// Aggregates all backtrack-related state used by the App.
 #[derive(Default)]
@@ -37,6 +39,18 @@ impl App {
         tui: &mut tui::Tui,
         event: TuiEvent,
     ) -> Result<bool> {
+        if matches!(
+            &event,
+            TuiEvent::Key(KeyEvent {
+                code: KeyCode::Char('p'),
+                modifiers: KeyModifiers::CONTROL,
+                kind: KeyEventKind::Press,
+                ..
+            })
+        ) {
+            self.toggle_plan_mode();
+            return Ok(true);
+        }
         if self.backtrack.overlay_preview_active {
             match event {
                 TuiEvent::Key(KeyEvent {
@@ -319,6 +333,7 @@ impl App {
         drop_count: usize,
         prefill: &str,
     ) {
+        let was_plan_mode_active = self.chat_widget.is_plan_mode_active();
         let conv = new_conv.conversation;
         let session_configured = new_conv.session_configured;
         let init = crate::chatwidget::ChatWidgetInit {
@@ -332,13 +347,33 @@ impl App {
             #[cfg(feature = "slash_commands")]
             custom_slash_commands: self.custom_slash_commands.clone(),
         };
-        self.chat_widget =
+        let chat_widget =
             crate::chatwidget::ChatWidget::new_from_existing(init, conv, session_configured);
-        // Trim transcript up to the selected user message and re-render it.
+        self.finish_installing_forked_chat_widget(
+            tui,
+            chat_widget,
+            drop_count,
+            prefill,
+            was_plan_mode_active,
+        );
+    }
+
+    fn finish_installing_forked_chat_widget(
+        &mut self,
+        tui: &mut tui::Tui,
+        chat_widget: crate::chatwidget::ChatWidget,
+        drop_count: usize,
+        prefill: &str,
+        was_plan_mode_active: bool,
+    ) {
+        self.chat_widget = chat_widget;
         self.trim_transcript_for_backtrack(drop_count);
         self.render_transcript_once(tui);
         if !prefill.is_empty() {
             self.chat_widget.set_composer_text(prefill.to_string());
+        }
+        if was_plan_mode_active {
+            self.chat_widget.submit_op(Op::EnterPlanMode);
         }
         tui.frame_requester().schedule_frame();
     }

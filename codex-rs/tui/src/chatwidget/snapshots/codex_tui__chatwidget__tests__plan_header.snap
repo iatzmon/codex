@@ -1,0 +1,7 @@
+---
+source: tui/src/chatwidget/tests.rs
+assertion_line: 2006
+expression: snapshot
+---
+PLAN  Read-only planning mode • toggle with ⌃P • exit with
+/exit-plan • apply with /apply-plan [mode] • remember

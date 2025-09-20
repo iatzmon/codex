@@ -3,6 +3,8 @@ use chrono::Utc;
 use serde::Deserialize;
 use serde::Serialize;
 
+use codex_protocol::plan_mode::PlanEntryPayload;
+use codex_protocol::plan_mode::PlanEntryTypePayload;
 /// Categories of plan entries that describe the type of proposal captured
 /// while operating in Plan Mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,5 +56,28 @@ impl PlanEntry {
     pub fn with_details(mut self, details: impl Into<String>) -> Self {
         self.details = Some(details.into());
         self
+    }
+}
+
+impl From<PlanEntryType> for PlanEntryTypePayload {
+    fn from(entry_type: PlanEntryType) -> Self {
+        match entry_type {
+            PlanEntryType::Command => PlanEntryTypePayload::Command,
+            PlanEntryType::FileChange => PlanEntryTypePayload::FileChange,
+            PlanEntryType::Research => PlanEntryTypePayload::Research,
+            PlanEntryType::Decision => PlanEntryTypePayload::Decision,
+        }
+    }
+}
+
+impl From<&PlanEntry> for PlanEntryPayload {
+    fn from(entry: &PlanEntry) -> Self {
+        Self {
+            sequence: entry.sequence,
+            entry_type: entry.entry_type.into(),
+            summary: entry.summary.clone(),
+            details: entry.details.clone(),
+            created_at: entry.created_at.to_rfc3339(),
+        }
     }
 }

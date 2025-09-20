@@ -14,6 +14,7 @@ fn exit_plan_restores_prior_mode() {
         AskForApproval::OnFailure,
         vec![ToolCapability::new("fs.read", ToolMode::ReadOnly)],
         &PlanModeConfig::default(),
+        true,
     );
 
     session.exit_plan_mode();

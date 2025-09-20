@@ -11,6 +11,7 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ENVIRONMENT_CONTEXT_CLOSE_TAG;
 use codex_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
+use std::path::Path;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, DeriveDisplay)]
@@ -32,6 +33,17 @@ pub(crate) struct EnvironmentContext {
 }
 
 impl EnvironmentContext {
+    /// Returns true when the provided absolute `path` resides within the
+    /// current working directory or one of the explicit writable roots.
+    pub fn is_path_within_workspace(&self, path: &Path) -> bool {
+        let in_cwd = self.cwd.as_ref().is_some_and(|cwd| path.starts_with(cwd));
+        let in_writable_root = self
+            .writable_roots
+            .as_ref()
+            .is_some_and(|roots| roots.iter().any(|root| path.starts_with(root)));
+        in_cwd || in_writable_root
+    }
+
     pub fn new(
         cwd: Option<PathBuf>,
         approval_policy: Option<AskForApproval>,

@@ -14,6 +14,7 @@ fn session() -> PlanModeSession {
         AskForApproval::OnRequest,
         vec![ToolCapability::new("fs.read", ToolMode::ReadOnly)],
         &config,
+        true,
     )
 }
 

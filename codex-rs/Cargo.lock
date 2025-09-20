@@ -873,6 +873,7 @@ name = "codex-protocol"
 version = "0.0.0"
 dependencies = [
  "base64",
+ "chrono",
  "icu_decimal",
  "icu_locale_core",
  "mcp-types",
@@ -969,6 +970,7 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width 0.1.14",
  "url",
+ "uuid",
  "vt100",
 ]
 
