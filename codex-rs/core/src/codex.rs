@@ -517,17 +517,6 @@ impl Session {
             ..Default::default()
         };
 
-        if config.plan_mode.plan_enabled {
-            state.plan_mode = Some(PlanModeSession::new(
-                Uuid::from(conversation_id),
-                approval_policy,
-                Session::plan_mode_capabilities(&config),
-                &config.plan_mode,
-                config.sandbox_policy.has_full_network_access(),
-            ));
-            state.plan_mode_prompt_recorded = false;
-        }
-
         #[cfg(feature = "slash_commands")]
         let slash_commands = match SlashCommandService::new(config.as_ref()).await {
             Ok(service) => Some(service),
@@ -555,6 +544,17 @@ impl Session {
                 (McpConnectionManager::default(), Default::default())
             }
         };
+
+        if config.plan_mode.plan_enabled {
+            state.plan_mode = Some(PlanModeSession::new(
+                Uuid::from(conversation_id),
+                approval_policy,
+                Session::plan_mode_capabilities(&mcp_connection_manager),
+                &config.plan_mode,
+                config.sandbox_policy.has_full_network_access(),
+            ));
+            state.plan_mode_prompt_recorded = false;
+        }
 
         // Surface individual client start-up failures to the user.
         if !failed_clients.is_empty() {
@@ -1302,14 +1302,60 @@ impl Session {
     /// Spawn the configured notifier (if any) with the given JSON payload as
     /// the last argument. Failures are logged but otherwise ignored so that
     /// notification issues do not interfere with the main workflow.
-    fn plan_mode_capabilities(config: &Config) -> Vec<ToolCapability> {
-        config
-            .plan_mode
-            .allowed_read_only_tools
-            .iter()
-            .cloned()
-            .map(|id| ToolCapability::new(id, ToolMode::ReadOnly))
-            .collect()
+    fn plan_mode_capabilities(manager: &McpConnectionManager) -> Vec<ToolCapability> {
+        let mut capabilities = Vec::new();
+        let mut seen = HashSet::new();
+
+        for (qualified_name, tool) in manager.list_all_tools() {
+            let mcp_types::Tool {
+                annotations, name, ..
+            } = tool;
+
+            let read_only = annotations
+                .as_ref()
+                .and_then(|ann| ann.read_only_hint)
+                .unwrap_or(false);
+            if !read_only {
+                continue;
+            }
+
+            let requires_network = annotations
+                .as_ref()
+                .and_then(|ann| ann.open_world_hint)
+                .unwrap_or(false);
+
+            Self::push_capability(
+                &mut capabilities,
+                &mut seen,
+                qualified_name,
+                requires_network,
+            );
+            Self::push_capability(&mut capabilities, &mut seen, name, requires_network);
+        }
+
+        // Attachments are allowed only when explicitly configured.
+        Self::push_capability(
+            &mut capabilities,
+            &mut seen,
+            "attachments.read".to_string(),
+            true,
+        );
+
+        capabilities
+    }
+
+    fn push_capability(
+        capabilities: &mut Vec<ToolCapability>,
+        seen: &mut HashSet<String>,
+        id: String,
+        requires_network: bool,
+    ) {
+        if seen.insert(id.clone()) {
+            capabilities.push(
+                ToolCapability::new(id, ToolMode::ReadOnly)
+                    .with_network_requirement(requires_network),
+            );
+        }
     }
 
     fn plan_mode_payload(&self) -> Option<PlanModeSessionPayload> {
@@ -1340,7 +1386,7 @@ impl Session {
         let session = PlanModeSession::new(
             Uuid::from(self.conversation_id),
             approval_policy,
-            Self::plan_mode_capabilities(config),
+            Self::plan_mode_capabilities(&self.mcp_connection_manager),
             &config.plan_mode,
             network_enabled,
         );
