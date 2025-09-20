@@ -6,6 +6,9 @@
     "codex": "bin/codex.js"
   },
   "type": "module",
+  "scripts": {
+    "build": "node ./scripts/dev_build.mjs"
+  },
   "engines": {
     "node": ">=20"
   },
