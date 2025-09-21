@@ -8,7 +8,7 @@ use super::layer_summary::HookLayerSummary;
 use super::{HookDefinition, HookEvent, HookScope};
 
 /// Primary runtime view of configured hooks.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct HookRegistry {
     pub events: HashMap<HookEvent, Vec<HookDefinition>>,
     pub last_loaded: Option<DateTime<Utc>>,

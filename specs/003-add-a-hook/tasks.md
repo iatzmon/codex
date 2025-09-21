@@ -61,7 +61,7 @@
 - [ ] T032 Register hook command namespace in `codex-cli/bin/codex.js`
 
 ## Phase 3.4: Integration
-- [ ] T033 Wire hook config loader into runtime config pipeline in `codex-rs/core/src/config.rs`
+- [X] T033 Wire hook config loader into runtime config pipeline in `codex-rs/core/src/config.rs`
 - [ ] T034 Connect PreToolUse/PostToolUse flow to `HookExecutor` in `codex-rs/core/src/exec.rs`
 - [ ] T035 Connect user prompt and session lifecycle events to hooks in `codex-rs/core/src/conversation_manager.rs`
 - [ ] T036 Synthesize legacy notify configuration as Notification hook in `codex-rs/core/src/user_notification.rs`
