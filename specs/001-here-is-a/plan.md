@@ -249,4 +249,4 @@ ios/ or android/
 - [x] Complexity deviations documented (none required)
 
 ---
-*Based on Constitution v2.1.1 - See `/memory/constitution.md`*
+*Based on Constitution v3.0.0 - See `/memory/constitution.md`*

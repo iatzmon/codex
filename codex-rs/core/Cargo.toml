@@ -36,11 +36,13 @@ mcp-types = { path = "../mcp-types" }
 os_info = "3.12.0"
 portable-pty = "0.9.0"
 rand = "0.9"
+regex = "1.11.0"
 regex-lite = "0.1.7"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.10.6"
+hex = "0.4"
 shlex = "1.3.0"
 similar = "2.7.0"
 strum_macros = "0.27.2"
@@ -48,11 +50,13 @@ tempfile = "3"
 thiserror = "2.0.16"
 time = { version = "0.3", features = ["formatting", "parsing", "local-offset", "macros"] }
 tokio = { version = "1", features = [
+    "fs",
     "io-std",
     "macros",
     "process",
     "rt-multi-thread",
     "signal",
+    "time",
 ] }
 tokio-util = "0.7.16"
 toml = "0.9.5"
@@ -62,7 +66,7 @@ tree-sitter = "0.25.9"
 tree-sitter-bash = "0.25.0"
 uuid = { version = "1", features = ["serde", "v4"] }
 which = "6"
-wildmatch = "2.5.0"
+wildmatch = { version = "2.5.0", features = ["serde"] }
 
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -87,6 +91,11 @@ tempfile = "3"
 tokio-test = "0.4"
 walkdir = "2.5.0"
 wiremock = "0.6"
+criterion = { version = "0.5", default-features = false }
+
+[[bench]]
+name = "hook_executor"
+harness = false
 
 [package.metadata.cargo-shear]
 ignored = ["openssl-sys"]

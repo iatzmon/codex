@@ -68,6 +68,9 @@ use crate::exec_command::ExecSessionManager;
 use crate::exec_command::WRITE_STDIN_TOOL_NAME;
 use crate::exec_command::WriteStdinParams;
 use crate::exec_env::create_env;
+use crate::hooks::executor::{HookExecutor, PreToolUsePayload};
+use crate::hooks::snapshot::build_hook_registry_snapshot;
+use crate::hooks::{HookDecision, HookLogWriter, HookOutcome, HookScope};
 use crate::mcp_connection_manager::MCP_TOOL_NAME_DELIMITER;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::mcp_tool_call::handle_mcp_tool_call;
@@ -105,6 +108,10 @@ use crate::protocol::ExecApprovalRequestEvent;
 use crate::protocol::ExecCommandBeginEvent;
 use crate::protocol::ExecCommandEndEvent;
 use crate::protocol::FileChange;
+use crate::protocol::HookExecLogResponseEvent;
+use crate::protocol::HookRegistrySnapshotEvent;
+use crate::protocol::HookReloadResultEvent;
+use crate::protocol::HookValidationResultEvent;
 use crate::protocol::InputItem;
 use crate::protocol::ListCustomPromptsResponseEvent;
 use crate::protocol::Op;
@@ -141,6 +148,9 @@ use crate::util::backoff;
 use codex_protocol::config_types::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::custom_prompts::CustomPrompt;
+use codex_protocol::hooks::{
+    HookExecLogResponse, HookReloadResponse, HookValidationStatus, HookValidationSummary,
+};
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::LocalShellAction;
@@ -187,6 +197,7 @@ pub struct Codex {
 pub struct CodexSpawnOk {
     pub codex: Codex,
     pub conversation_id: ConversationId,
+    pub(crate) session: Arc<Session>,
 }
 
 pub(crate) const INITIAL_SUBMIT_ID: &str = "";
@@ -243,7 +254,13 @@ impl Codex {
         let conversation_id = session.conversation_id;
 
         // This task will run until Op::Shutdown is received.
-        tokio::spawn(submission_loop(session, turn_context, config, rx_sub));
+        let submission_session = Arc::clone(&session);
+        tokio::spawn(submission_loop(
+            submission_session,
+            turn_context,
+            config,
+            rx_sub,
+        ));
         let codex = Codex {
             next_id: AtomicU64::new(0),
             tx_sub,
@@ -253,6 +270,7 @@ impl Codex {
         Ok(CodexSpawnOk {
             codex,
             conversation_id,
+            session,
         })
     }
 
@@ -316,6 +334,9 @@ pub(crate) struct Session {
     /// External notifier command (will be passed as args to exec()). When
     /// `None` this feature is disabled.
     notify: Option<Vec<String>>,
+
+    /// Hook executor coordinating lifecycle hook invocations.
+    hook_executor: HookExecutor,
 
     /// Optional rollout recorder for persisting the conversation transcript so
     /// sessions can be replayed or inspected later.
@@ -613,6 +634,15 @@ impl Session {
                 experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
             });
         }
+        let hook_log_path = config.codex_home.join("logs").join("hooks.jsonl");
+        let hook_executor = HookExecutor::with_runtime(
+            config.hook_registry.clone(),
+            HookLogWriter::new(hook_log_path),
+            HookScope::LocalUser {
+                codex_home: config.codex_home.clone(),
+            },
+        );
+
         let sess = Arc::new(Session {
             conversation_id,
             tx_event: tx_event.clone(),
@@ -620,6 +650,7 @@ impl Session {
             session_manager: ExecSessionManager::default(),
             unified_exec_manager: UnifiedExecSessionManager::default(),
             notify,
+            hook_executor,
             state: Mutex::new(state),
             #[cfg(feature = "slash_commands")]
             slash_commands,
@@ -672,6 +703,8 @@ impl Session {
             };
             sess.send_event(event).await;
         }
+
+        sess.notify_session_start().await;
 
         Ok((sess, turn_context))
     }
@@ -1138,6 +1171,47 @@ impl Session {
             return Ok(output);
         }
 
+        let pre_hook_decision = self.run_pre_tool_hooks(&raw_command).await;
+
+        if let Some(decision) = &pre_hook_decision {
+            if decision.decision != HookOutcome::Allow {
+                let mut messages: Vec<String> = decision
+                    .message
+                    .iter()
+                    .chain(decision.system_message.iter())
+                    .cloned()
+                    .collect();
+
+                if messages.is_empty() {
+                    messages.push(format!(
+                        "Command blocked by pre-tool hook (outcome: {:?}).",
+                        decision.decision
+                    ));
+                }
+
+                let combined_message = messages.join("\n");
+                let exit_code = if decision.exit_code == 0 {
+                    1
+                } else {
+                    decision.exit_code
+                };
+
+                let output = ExecToolCallOutput {
+                    exit_code,
+                    stdout: StreamOutput::new(String::new()),
+                    stderr: StreamOutput::new(combined_message.clone()),
+                    aggregated_output: StreamOutput::new(combined_message),
+                    duration: Duration::default(),
+                    timed_out: false,
+                };
+
+                self.run_post_tool_hooks(&raw_command, Some(&output), pre_hook_decision.as_ref())
+                    .await;
+
+                return Ok(output);
+            }
+        }
+
         self.on_exec_command_begin(turn_diff_tracker, begin_ctx.clone())
             .await;
 
@@ -1166,6 +1240,14 @@ impl Session {
                 &output_stderr
             }
         };
+
+        self.run_post_tool_hooks(
+            &raw_command,
+            result.as_ref().ok(),
+            pre_hook_decision.as_ref(),
+        )
+        .await;
+
         self.on_exec_command_end(
             turn_diff_tracker,
             &sub_id,
@@ -1189,6 +1271,80 @@ impl Session {
             }),
         };
         self.send_event(event).await;
+    }
+
+    async fn run_pre_tool_hooks(&self, raw_command: &str) -> Option<HookDecision> {
+        if self.hook_executor.is_empty() {
+            return None;
+        }
+
+        let payload = PreToolUsePayload {
+            tool_name: EXEC_COMMAND_TOOL_NAME.to_string(),
+            command: raw_command.to_string(),
+        };
+
+        match self.hook_executor.evaluate_pre_tool_use(&payload).await {
+            Ok(decision) => {
+                if decision.decision != HookOutcome::Allow {
+                    warn!(
+                        %raw_command,
+                        outcome = ?decision.decision,
+                        "pre-tool hook returned non-allow outcome"
+                    );
+                }
+                Some(decision)
+            }
+            Err(err) => {
+                warn!(%raw_command, "pre-tool hook evaluation failed: {err}");
+                None
+            }
+        }
+    }
+
+    async fn run_post_tool_hooks(
+        &self,
+        raw_command: &str,
+        output: Option<&ExecToolCallOutput>,
+        _pre_decision: Option<&HookDecision>,
+    ) {
+        if self.hook_executor.is_empty() {
+            return;
+        }
+
+        let exit_code = output.map(|result| result.exit_code).unwrap_or_default();
+        self.hook_executor
+            .record_post_tool_use(raw_command, exit_code)
+            .await;
+    }
+
+    pub(crate) async fn notify_session_start(&self) {
+        if self.hook_executor.is_empty() {
+            return;
+        }
+        self.hook_executor.notify_session_start().await;
+    }
+
+    pub(crate) async fn notify_session_end(&self) {
+        if self.hook_executor.is_empty() {
+            return;
+        }
+        self.hook_executor.notify_session_end().await;
+    }
+
+    pub(crate) async fn notify_user_prompt(&self) {
+        if self.hook_executor.is_empty() {
+            return;
+        }
+        self.hook_executor.notify_user_prompt().await;
+    }
+
+    pub(crate) async fn on_submission(&self, op: &Op) {
+        match op {
+            Op::UserInput { .. } | Op::UserTurn { .. } => {
+                self.notify_user_prompt().await;
+            }
+            _ => {}
+        }
     }
 
     async fn notify_stream_error(&self, sub_id: &str, message: impl Into<String>) {
@@ -2135,6 +2291,54 @@ async fn submission_loop(
 
                     sess_clone.send_event(event).await;
                 });
+            }
+            Op::HookList(request) => {
+                let registry = sess.hook_executor.registry();
+                let snapshot = build_hook_registry_snapshot(&registry, &request);
+                let event = Event {
+                    id: sub.id.clone(),
+                    msg: EventMsg::HookListResponse(HookRegistrySnapshotEvent {
+                        registry: snapshot,
+                    }),
+                };
+                sess.send_event(event).await;
+            }
+            Op::HookExecLog(_request) => {
+                let event = Event {
+                    id: sub.id.clone(),
+                    msg: EventMsg::HookExecLogResponse(HookExecLogResponseEvent {
+                        logs: HookExecLogResponse {
+                            records: Vec::new(),
+                        },
+                    }),
+                };
+                sess.send_event(event).await;
+            }
+            Op::HookValidate(_request) => {
+                let event = Event {
+                    id: sub.id.clone(),
+                    msg: EventMsg::HookValidationResult(HookValidationResultEvent {
+                        summary: HookValidationSummary {
+                            status: HookValidationStatus::Ok,
+                            errors: Vec::new(),
+                            warnings: Vec::new(),
+                            layers: Vec::new(),
+                        },
+                    }),
+                };
+                sess.send_event(event).await;
+            }
+            Op::HookReload => {
+                let event = Event {
+                    id: sub.id.clone(),
+                    msg: EventMsg::HookReloadResult(HookReloadResultEvent {
+                        result: HookReloadResponse {
+                            reloaded: false,
+                            message: Some("hook reload placeholder".to_string()),
+                        },
+                    }),
+                };
+                sess.send_event(event).await;
             }
             Op::ListMcpTools => {
                 let sub_id = sub.id.clone();
@@ -4497,6 +4701,7 @@ mod tests {
             session_manager: ExecSessionManager::default(),
             unified_exec_manager: UnifiedExecSessionManager::default(),
             notify: None,
+            hook_executor: HookExecutor::default(),
             rollout: Mutex::new(None),
             state: Mutex::new(State {
                 history: ConversationHistory::new(),

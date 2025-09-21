@@ -4,6 +4,7 @@ use crate::app_event_sender::AppEventSender;
 use crate::chatwidget::ChatWidget;
 use crate::file_search::FileSearchManager;
 use crate::pager_overlay::Overlay;
+use crate::render::hooks_panel;
 use crate::resume_picker::ResumeSelection;
 #[cfg(feature = "slash_commands")]
 use crate::slash_command::CustomSlashCommand;
@@ -15,6 +16,9 @@ use codex_core::ConversationManager;
 use codex_core::config::Config;
 use codex_core::config::persist_model_selection;
 use codex_core::model_family::find_family_for_model;
+use codex_core::protocol::Event;
+use codex_core::protocol::EventMsg;
+use codex_core::protocol::HookRegistrySnapshotEvent;
 use codex_core::protocol::Op;
 use codex_core::protocol::TokenUsage;
 use codex_core::protocol_config_types::ReasoningEffort as ReasoningEffortConfig;
@@ -36,6 +40,11 @@ use std::time::Duration;
 use tokio::select;
 use tokio::sync::mpsc::unbounded_channel;
 // use uuid::Uuid;
+
+use codex_protocol::hooks::HookListRequest;
+use codex_protocol::hooks::HookRegistrySnapshot;
+
+const HOOK_PANEL_TITLE: &str = "H O O K S";
 
 pub(crate) struct App {
     pub(crate) server: Arc<ConversationManager>,
@@ -65,6 +74,62 @@ pub(crate) struct App {
 
     // Esc-backtracking state grouped
     pub(crate) backtrack: crate::app_backtrack::BacktrackState,
+
+    hook_registry: HookRegistryState,
+    pub(crate) hook_panel_active: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct HookRegistryState {
+    snapshot: HookRegistrySnapshot,
+    is_loading: bool,
+    last_error: Option<String>,
+}
+
+impl Default for HookRegistryState {
+    fn default() -> Self {
+        Self {
+            snapshot: HookRegistrySnapshot::default(),
+            is_loading: false,
+            last_error: None,
+        }
+    }
+}
+
+impl HookRegistryState {
+    fn clear(&mut self) {
+        self.snapshot = HookRegistrySnapshot::default();
+        self.last_error = None;
+        self.is_loading = false;
+    }
+
+    fn begin_refresh(&mut self) {
+        self.is_loading = true;
+        self.last_error = None;
+    }
+
+    fn update_snapshot(&mut self, snapshot: HookRegistrySnapshot) {
+        self.snapshot = snapshot;
+        self.is_loading = false;
+    }
+
+    #[allow(dead_code)]
+    fn set_error(&mut self, message: String) {
+        self.is_loading = false;
+        self.last_error = Some(message);
+    }
+
+    pub(crate) fn snapshot(&self) -> &HookRegistrySnapshot {
+        &self.snapshot
+    }
+
+    pub(crate) fn is_loading(&self) -> bool {
+        self.is_loading
+    }
+
+    pub(crate) fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
 }
 
 #[cfg(feature = "slash_commands")]
@@ -177,12 +242,17 @@ impl App {
             has_emitted_history_lines: false,
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             backtrack: BacktrackState::default(),
+            hook_registry: HookRegistryState::default(),
+            hook_panel_active: false,
         };
 
         let tui_events = tui.event_stream();
         tokio::pin!(tui_events);
 
         tui.frame_requester().schedule_frame();
+
+        app.refresh_hook_registry();
+        app.rebuild_hook_panel_overlay(tui);
 
         while select! {
             Some(event) = app_event_rx.recv() => {
@@ -254,6 +324,9 @@ impl App {
                     custom_slash_commands: self.custom_slash_commands.clone(),
                 };
                 self.chat_widget = ChatWidget::new(init, self.server.clone());
+                self.hook_registry.clear();
+                self.refresh_hook_registry();
+                self.rebuild_hook_panel_overlay(tui);
                 tui.frame_requester().schedule_frame();
             }
             AppEvent::InsertHistoryCell(cell) => {
@@ -308,7 +381,15 @@ impl App {
                 self.chat_widget.on_commit_tick();
             }
             AppEvent::CodexEvent(event) => {
-                self.chat_widget.handle_codex_event(event);
+                let Event { id, msg } = event;
+                match msg {
+                    EventMsg::HookListResponse(snapshot) => {
+                        self.on_hook_registry_snapshot(tui, snapshot);
+                    }
+                    other => self
+                        .chat_widget
+                        .handle_codex_event(Event { id, msg: other }),
+                }
             }
             AppEvent::ConversationHistory(ev) => {
                 self.on_conversation_history_for_backtrack(tui, ev).await?;
@@ -402,8 +483,50 @@ impl App {
         Ok(true)
     }
 
+    fn on_hook_registry_snapshot(
+        &mut self,
+        tui: &mut tui::Tui,
+        payload: HookRegistrySnapshotEvent,
+    ) {
+        self.hook_registry.update_snapshot(payload.registry);
+        self.rebuild_hook_panel_overlay(tui);
+        tui.frame_requester().schedule_frame();
+    }
+
     pub(crate) fn token_usage(&self) -> codex_core::protocol::TokenUsage {
         self.chat_widget.token_usage()
+    }
+
+    pub(crate) fn hook_registry_state(&self) -> &HookRegistryState {
+        &self.hook_registry
+    }
+
+    fn refresh_hook_registry(&mut self) {
+        self.hook_registry.begin_refresh();
+        self.app_event_tx
+            .send(AppEvent::CodexOp(Op::HookList(HookListRequest {
+                event: None,
+                scope: None,
+            })));
+    }
+
+    fn open_hook_panel(&mut self, tui: &mut tui::Tui) {
+        let _ = tui.enter_alt_screen();
+        self.hook_panel_active = true;
+        self.refresh_hook_registry();
+        self.rebuild_hook_panel_overlay(tui);
+    }
+
+    fn rebuild_hook_panel_overlay(&mut self, tui: &mut tui::Tui) {
+        if !self.hook_panel_active {
+            return;
+        }
+        let lines = hooks_panel::build_hook_panel_lines(self.hook_registry_state());
+        self.overlay = Some(Overlay::new_static_with_title(
+            lines,
+            HOOK_PANEL_TITLE.to_string(),
+        ));
+        tui.frame_requester().schedule_frame();
     }
 
     fn on_update_reasoning_effort(&mut self, effort: Option<ReasoningEffortConfig>) {
@@ -443,6 +566,21 @@ impl App {
                 let _ = tui.enter_alt_screen();
                 self.overlay = Some(Overlay::new_transcript(self.transcript_lines.clone()));
                 tui.frame_requester().schedule_frame();
+            }
+            KeyEvent {
+                code: KeyCode::Char(ch),
+                modifiers,
+                kind: KeyEventKind::Press,
+                ..
+            } if matches!(ch, 'k' | 'K') && modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.hook_panel_active {
+                    self.close_transcript_overlay(tui);
+                } else {
+                    if self.overlay.is_some() {
+                        self.close_transcript_overlay(tui);
+                    }
+                    self.open_hook_panel(tui);
+                }
             }
             // Esc primes/advances backtracking only in normal (not working) mode
             // with an empty composer. In any other state, forward Esc so the
@@ -543,6 +681,8 @@ mod tests {
             enhanced_keys_supported: false,
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             backtrack: BacktrackState::default(),
+            hook_registry: HookRegistryState::default(),
+            hook_panel_active: false,
         };
 
         (app, rx, op_rx)

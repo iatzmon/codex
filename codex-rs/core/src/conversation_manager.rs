@@ -3,6 +3,7 @@ use crate::CodexAuth;
 use crate::codex::Codex;
 use crate::codex::CodexSpawnOk;
 use crate::codex::INITIAL_SUBMIT_ID;
+use crate::codex::Session;
 use crate::codex_conversation::CodexConversation;
 use crate::config::Config;
 use crate::error::CodexErr;
@@ -62,14 +63,16 @@ impl ConversationManager {
         let CodexSpawnOk {
             codex,
             conversation_id,
+            session,
         } = Codex::spawn(config, auth_manager, InitialHistory::New).await?;
-        self.finalize_spawn(codex, conversation_id).await
+        self.finalize_spawn(codex, conversation_id, session).await
     }
 
     async fn finalize_spawn(
         &self,
         codex: Codex,
         conversation_id: ConversationId,
+        session: Arc<Session>,
     ) -> CodexResult<NewConversation> {
         // The first event must be `SessionInitialized`. Validate and forward it
         // to the caller so that they can display it in the conversation
@@ -85,7 +88,7 @@ impl ConversationManager {
             }
         };
 
-        let conversation = Arc::new(CodexConversation::new(codex));
+        let conversation = Arc::new(CodexConversation::new(codex, session));
         self.conversations
             .write()
             .await
@@ -119,8 +122,9 @@ impl ConversationManager {
         let CodexSpawnOk {
             codex,
             conversation_id,
+            session,
         } = Codex::spawn(config, auth_manager, initial_history).await?;
-        self.finalize_spawn(codex, conversation_id).await
+        self.finalize_spawn(codex, conversation_id, session).await
     }
 
     /// Removes the conversation from the manager's internal map, though the
@@ -131,7 +135,11 @@ impl ConversationManager {
         &self,
         conversation_id: &ConversationId,
     ) -> Option<Arc<CodexConversation>> {
-        self.conversations.write().await.remove(conversation_id)
+        let conversation = self.conversations.write().await.remove(conversation_id);
+        if let Some(conv) = &conversation {
+            conv.notify_session_end().await;
+        }
+        conversation
     }
 
     /// Fork an existing conversation by dropping the last `drop_last_messages`
@@ -153,9 +161,10 @@ impl ConversationManager {
         let CodexSpawnOk {
             codex,
             conversation_id,
+            session,
         } = Codex::spawn(config, auth_manager, history).await?;
 
-        self.finalize_spawn(codex, conversation_id).await
+        self.finalize_spawn(codex, conversation_id, session).await
     }
 }
 

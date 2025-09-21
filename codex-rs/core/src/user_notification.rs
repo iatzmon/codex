@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+
+use crate::hooks::{HookDefinition, HookEvent, HookMatchers, HookScope};
 use serde::Serialize;
 
 /// User can configure a program that will receive notifications. Each
@@ -16,6 +19,17 @@ pub(crate) enum UserNotification {
         /// The last message sent by the assistant in the turn.
         last_assistant_message: Option<String>,
     },
+}
+
+/// Produce a Notification hook definition that mimics the legacy `notify`
+/// configuration. The resulting hook executes in the provided scope.
+pub fn legacy_notify_hook(command: Vec<String>, scope: HookScope) -> HookDefinition {
+    let mut definition = HookDefinition::new("legacy.notify", HookEvent::Notification, scope);
+    definition.command = command;
+    definition.notes = Some("Synthesized from legacy notify configuration".to_string());
+    definition.matchers = HookMatchers::default();
+    definition.env = HashMap::new();
+    definition
 }
 
 #[cfg(test)]

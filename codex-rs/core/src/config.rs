@@ -9,6 +9,8 @@ use crate::config_types::ShellEnvironmentPolicyToml;
 use crate::config_types::Tui;
 use crate::config_types::UriBasedFileOpener;
 use crate::git_info::resolve_root_git_project_for_trust;
+use crate::hooks::config_loader::{HookConfigError, HookConfigLoader};
+use crate::hooks::{HookRegistry, HookScope};
 use crate::model_family::ModelFamily;
 use crate::model_family::derive_default_model_family;
 use crate::model_family::find_family_for_model;
@@ -18,7 +20,9 @@ use crate::openai_model_info::get_model_info;
 use crate::plan_mode::PlanModeConfig;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
+use crate::user_notification::legacy_notify_hook;
 use anyhow::Context;
+use chrono::Utc;
 use codex_protocol::config_types::ReasoningEffort;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SandboxMode;
@@ -29,6 +33,8 @@ use dirs::home_dir;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::env;
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
@@ -187,6 +193,9 @@ pub struct Config {
 
     /// Include the `view_image` tool that lets the agent attach a local image path to context.
     pub include_view_image_tool: bool,
+
+    /// Hook definitions loaded from managed, project, and local scopes.
+    pub hook_registry: HookRegistry,
 
     pub plan_mode: PlanModeConfig,
 
@@ -601,6 +610,112 @@ fn apply_toml_override(root: &mut TomlValue, path: &str, value: TomlValue) {
             }
         }
     }
+}
+
+fn load_hook_registry(
+    codex_home: &Path,
+    project_root: &Path,
+) -> Result<HookRegistry, HookConfigError> {
+    let mut sources = Vec::new();
+
+    if let Some(managed_root) = managed_hooks_root() {
+        let scope = HookScope::ManagedPolicy {
+            name: managed_policy_name(&managed_root),
+        };
+        push_hook_sources_for_path(&mut sources, &scope, &managed_root);
+    }
+
+    let project_dir = project_root.join(".codex");
+    let project_scope = HookScope::Project {
+        project_root: project_root.to_path_buf(),
+    };
+    push_hook_sources_for_path(
+        &mut sources,
+        &project_scope,
+        &project_dir.join("hooks.toml"),
+    );
+    push_hook_sources_for_path(&mut sources, &project_scope, &project_dir.join("hooks"));
+
+    let local_dir = codex_home.join("hooks");
+    let local_scope = HookScope::LocalUser {
+        codex_home: codex_home.to_path_buf(),
+    };
+    push_hook_sources_for_path(&mut sources, &local_scope, &local_dir.join("hooks.toml"));
+    push_hook_sources_for_path(&mut sources, &local_scope, &local_dir);
+
+    if sources.is_empty() {
+        return Ok(HookRegistry::default());
+    }
+
+    let (definitions, layers) = HookConfigLoader::load_layers(sources)?;
+    Ok(HookRegistry::with_layers(definitions, layers, Utc::now()))
+}
+
+fn managed_hooks_root() -> Option<PathBuf> {
+    if let Some(path) = env::var_os("CODEX_MANAGED_HOOKS") {
+        let candidate = PathBuf::from(path);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    let default_dir = PathBuf::from("/etc/codex/hooks");
+    if default_dir.exists() {
+        Some(default_dir)
+    } else {
+        None
+    }
+}
+
+fn managed_policy_name(root: &Path) -> String {
+    if root.is_file() {
+        root.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("managed")
+            .to_string()
+    } else {
+        root.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("managed")
+            .to_string()
+    }
+}
+
+fn push_hook_sources_for_path(
+    sources: &mut Vec<(HookScope, PathBuf)>,
+    scope: &HookScope,
+    candidate: &Path,
+) {
+    if is_toml_file(candidate) {
+        if !sources.iter().any(|(_, existing)| existing == candidate) {
+            sources.push((scope.clone(), candidate.to_path_buf()));
+        }
+        return;
+    }
+
+    if !candidate.is_dir() {
+        return;
+    }
+
+    if let Ok(entries) = fs::read_dir(candidate) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && is_toml_file(&path) {
+                if !sources.iter().any(|(_, existing)| existing == &path) {
+                    sources.push((scope.clone(), path));
+                }
+            }
+        }
+    }
+}
+
+fn is_toml_file(path: &Path) -> bool {
+    path.is_file()
+        && path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("toml"))
+            .unwrap_or(false)
 }
 
 /// Base config deserialized from ~/.codex/config.toml.
@@ -1033,6 +1148,22 @@ impl Config {
             plan_mode_config.plan_enabled = enabled;
         }
 
+        let mut hook_registry = match load_hook_registry(&codex_home, &resolved_cwd) {
+            Ok(registry) => registry,
+            Err(err) => {
+                tracing::warn!("failed to load hook configuration: {}", err);
+                HookRegistry::default()
+            }
+        };
+
+        if let Some(notify_command) = cfg.notify.as_ref().filter(|command| !command.is_empty()) {
+            let scope = HookScope::LocalUser {
+                codex_home: codex_home.clone(),
+            };
+            let definition = legacy_notify_hook(notify_command.clone(), scope);
+            hook_registry.insert(vec![definition]);
+        }
+
         let config = Self {
             model,
             review_model,
@@ -1087,6 +1218,7 @@ impl Config {
                 .experimental_use_unified_exec_tool
                 .unwrap_or(false),
             include_view_image_tool,
+            hook_registry,
             plan_mode: plan_mode_config,
             active_profile: active_profile_name,
             disable_paste_burst: cfg.disable_paste_burst.unwrap_or(false),
@@ -1656,6 +1788,7 @@ model_verbosity = "high"
                 use_experimental_streamable_shell_tool: false,
                 use_experimental_unified_exec_tool: false,
                 include_view_image_tool: true,
+                hook_registry: HookRegistry::default(),
                 plan_mode: PlanModeConfig::default(),
                 active_profile: Some("o3".to_string()),
                 disable_paste_burst: false,
@@ -1715,6 +1848,7 @@ model_verbosity = "high"
             use_experimental_streamable_shell_tool: false,
             use_experimental_unified_exec_tool: false,
             include_view_image_tool: true,
+            hook_registry: HookRegistry::default(),
             plan_mode: PlanModeConfig::default(),
             active_profile: Some("gpt3".to_string()),
             disable_paste_burst: false,
@@ -1789,6 +1923,7 @@ model_verbosity = "high"
             use_experimental_streamable_shell_tool: false,
             use_experimental_unified_exec_tool: false,
             include_view_image_tool: true,
+            hook_registry: HookRegistry::default(),
             plan_mode: PlanModeConfig::default(),
             active_profile: Some("zdr".to_string()),
             disable_paste_burst: false,
@@ -1849,6 +1984,7 @@ model_verbosity = "high"
             use_experimental_streamable_shell_tool: false,
             use_experimental_unified_exec_tool: false,
             include_view_image_tool: true,
+            hook_registry: HookRegistry::default(),
             plan_mode: PlanModeConfig::default(),
             active_profile: Some("gpt5".to_string()),
             disable_paste_burst: false,

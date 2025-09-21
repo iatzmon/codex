@@ -134,6 +134,7 @@ impl App {
             tui.insert_history_lines(lines);
         }
         self.overlay = None;
+        self.hook_panel_active = false;
         self.backtrack.overlay_preview_active = false;
         if was_backtrack {
             // Ensure backtrack state is fully reset when overlay closes (e.g. via 'q').

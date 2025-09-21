@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codex.openai.com/schemas/hooks/payload.json",
+  "title": "Codex Hook Runtime Payload",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "event",
+    "sessionId",
+    "timestamp",
+    "workspaceRoot",
+    "cwd",
+    "eventContext"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "enum": ["1.0"]
+    },
+    "event": {
+      "type": "string",
+      "enum": [
+        "PreToolUse",
+        "PostToolUse",
+        "UserPromptSubmit",
+        "Notification",
+        "Stop",
+        "SubagentStop",
+        "PreCompact",
+        "SessionStart",
+        "SessionEnd"
+      ]
+    },
+    "sessionId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "workspaceRoot": {
+      "type": "string",
+      "format": "unix-path"
+    },
+    "cwd": {
+      "type": "string",
+      "format": "unix-path"
+    },
+    "transcriptPath": {
+      "type": "string",
+      "format": "unix-path"
+    },
+    "schema": {
+      "type": "string",
+      "deprecated": true,
+      "description": "Backward compatibility alias for schemaVersion"
+    },
+    "sandbox": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["workspace-write", "danger-full-access", "read-only"]
+        },
+        "networkAccess": { "type": "boolean" },
+        "writableRoots": {
+          "type": "array",
+          "items": { "type": "string", "format": "unix-path" }
+        }
+      }
+    },
+    "eventContext": {
+      "oneOf": [
+        { "$ref": "#/definitions/preToolUse" },
+        { "$ref": "#/definitions/postToolUse" },
+        { "$ref": "#/definitions/userPromptSubmit" },
+        { "$ref": "#/definitions/notification" },
+        { "$ref": "#/definitions/stop" },
+        { "$ref": "#/definitions/subagentStop" },
+        { "$ref": "#/definitions/preCompact" },
+        { "$ref": "#/definitions/sessionStart" },
+        { "$ref": "#/definitions/sessionEnd" }
+      ]
+    }
+  },
+  "definitions": {
+    "preToolUse": {
+      "type": "object",
+      "required": ["toolName", "arguments"],
+      "properties": {
+        "toolName": { "type": "string" },
+        "toolKind": { "type": "string" },
+        "arguments": { "type": "object" },
+        "dryRun": { "type": "boolean" },
+        "matchedHooks": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "postToolUse": {
+      "type": "object",
+      "required": ["toolName", "result"],
+      "properties": {
+        "toolName": { "type": "string" },
+        "arguments": { "type": "object" },
+        "result": { "type": "object" },
+        "diffSummary": { "type": "string" }
+      }
+    },
+    "userPromptSubmit": {
+      "type": "object",
+      "required": ["promptText"],
+      "properties": {
+        "promptText": { "type": "string" },
+        "attachments": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "derivedInstructions": { "type": "string" }
+      }
+    },
+    "notification": {
+      "type": "object",
+      "required": ["kind", "message"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["approval", "reminder", "system"]
+        },
+        "message": { "type": "string" },
+        "requiresApproval": { "type": "boolean" }
+      }
+    },
+    "stop": {
+      "type": "object",
+      "required": ["reason"],
+      "properties": {
+        "reason": { "type": "string" },
+        "outstandingTasks": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "subagentStop": {
+      "type": "object",
+      "required": ["subagentId", "reason"],
+      "properties": {
+        "subagentId": { "type": "string" },
+        "reason": { "type": "string" }
+      }
+    },
+    "preCompact": {
+      "type": "object",
+      "required": ["trigger"],
+      "properties": {
+        "trigger": {
+          "type": "string",
+          "enum": ["manual", "auto"]
+        },
+        "totalTokens": { "type": "number" },
+        "estimatedSavings": { "type": "number" }
+      }
+    },
+    "sessionStart": {
+      "type": "object",
+      "required": ["source"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": ["startup", "resume", "clear", "compact"]
+        },
+        "restoredConversation": { "type": "boolean" },
+        "approvalsPolicy": { "type": "string" }
+      }
+    },
+    "sessionEnd": {
+      "type": "object",
+      "required": ["reason"],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": ["clear", "logout", "prompt_input_exit", "other"]
+        },
+        "durationMs": { "type": "integer" },
+        "totalTurns": { "type": "integer" }
+      }
+    }
+  }
+}
