@@ -1,5 +1,5 @@
-use codex_core::hooks::executor::{HookExecutor, PreToolUsePayload};
 use codex_core::hooks::HookOutcome;
+use codex_core::hooks::executor::{HookExecutor, PreToolUsePayload};
 
 #[tokio::test]
 async fn pretool_guard_blocks_dangerous_shell_command() {

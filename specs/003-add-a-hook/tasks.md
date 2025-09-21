@@ -47,10 +47,10 @@
 
 ### Services & Core Logic
 - [X] T020 Implement layered TOML loader in `codex-rs/core/src/hooks/config_loader.rs`
-- [ ] T021 Implement registry builder and precedence evaluation in `codex-rs/core/src/hooks/registry.rs`
+- [X] T021 Implement registry builder and precedence evaluation in `codex-rs/core/src/hooks/registry.rs`
 - [X] T022 Implement schema version validation utilities in `codex-rs/core/src/hooks/schema_registry.rs`
 - [X] T023 Implement async `HookExecutor` runner with timeout handling in `codex-rs/core/src/hooks/executor.rs`
-- [ ] T024 Implement JSONL log writer for execution records in `codex-rs/core/src/hooks/log_writer.rs`
+- [X] T024 Implement JSONL log writer for execution records in `codex-rs/core/src/hooks/log_writer.rs`
 - [ ] T025 Extend protocol types with hook RPC messages in `codex-rs/protocol/src/protocol.rs`
 - [ ] T026 Implement backend hook RPC handlers in `codex-rs/core/src/client.rs`
 - [ ] T027 Add CLI IPC helper for hook RPCs in `codex-cli/src/ipc/hooks.ts`
