@@ -651,11 +651,16 @@ dependencies = [
 name = "codex-common"
 version = "0.0.0"
 dependencies = [
+ "chrono",
  "clap",
  "codex-core",
  "codex-protocol",
+ "regex",
  "serde",
+ "serde_json",
  "toml",
+ "uuid",
+ "wildmatch",
 ]
 
 [[package]]
@@ -679,6 +684,7 @@ dependencies = [
  "env-flags",
  "eventsource-stream",
  "futures",
+ "hex",
  "landlock",
  "libc",
  "maplit",
@@ -689,6 +695,7 @@ dependencies = [
  "predicates",
  "pretty_assertions",
  "rand 0.9.2",
+ "regex",
  "regex-lite",
  "reqwest",
  "seccompiler",
@@ -5354,6 +5361,9 @@ name = "wildmatch"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39b7d07a236abaef6607536ccfaf19b396dbe3f5110ddb73d39f4562902ed382"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "winapi"
