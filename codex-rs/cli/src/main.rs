@@ -17,6 +17,7 @@ use codex_exec::Cli as ExecCli;
 use codex_tui::Cli as TuiCli;
 use std::path::PathBuf;
 
+mod hooks;
 mod mcp_cmd;
 
 use crate::mcp_cmd::McpCli;
@@ -82,6 +83,9 @@ enum Subcommand {
     /// Internal: generate TypeScript protocol bindings.
     #[clap(hide = true)]
     GenerateTs(GenerateTsCommand),
+
+    /// Inspect and manage lifecycle hooks.
+    Hooks(hooks::HooksCli),
 }
 
 #[derive(Debug, Parser)]
@@ -275,6 +279,9 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
         }
         Some(Subcommand::GenerateTs(gen_cli)) => {
             codex_protocol_ts::generate_ts(&gen_cli.out_dir, gen_cli.prettier.as_deref())?;
+        }
+        Some(Subcommand::Hooks(hooks_cli)) => {
+            hooks::run_hooks_cli(hooks_cli, root_config_overrides)?;
         }
     }
 

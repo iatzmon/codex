@@ -16,6 +16,41 @@ Codex supports several mechanisms for setting config values:
 
 Both the `--config` flag and the `config.toml` file support the following options:
 
+## Hooks configuration
+
+Lifecycle hooks are discovered from layered TOML files rather than from
+`config.toml` directly. Codex loads hook definitions in the following
+precedence order (first decisive match wins):
+
+1. **Managed policy**: `/etc/codex/hooks/*.toml` or the directory specified by `CODEX_MANAGED_HOOKS`.
+2. **Project**: `<workspace>/.codex/hooks.toml` and any additional files inside `<workspace>/.codex/hooks/`.
+3. **Local user**: `$CODEX_HOME/hooks/hooks.toml` and any `.toml` files inside `$CODEX_HOME/hooks/` (defaults to `~/.codex`).
+
+Each file must start with `schemaVersion = "1.0"` and a `[[hooks]]` array.
+Common fields include:
+
+```toml
+[[hooks]]
+id = "project.shell.guard"
+event = "PreToolUse"
+command = ["./hooks/pretool.sh"]
+schemaVersions = ["1.0"]
+timeoutMs = 10000
+
+  [hooks.matchers]
+  toolNames = [{ type = "glob", value = "shell*" }]
+```
+
+The CLI exposes helper commands under `codex hooks`:
+
+- `codex hooks list [--event <name>] [--scope managed|project|local] [--json]`
+- `codex hooks validate [--scope …] [--json]`
+- `codex hooks exec-log [--since <ISO8601>] [--event …] [--hook-id …] [--tail <n>] [--json]`
+- `codex hooks reload`
+
+See `docs/hooks.md` for a full walkthrough covering hook payloads, matchers,
+and execution logs.
+
 ## model
 
 The model that Codex should use.

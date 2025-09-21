@@ -9,6 +9,8 @@ use crate::config_types::ShellEnvironmentPolicyToml;
 use crate::config_types::Tui;
 use crate::config_types::UriBasedFileOpener;
 use crate::git_info::resolve_root_git_project_for_trust;
+use crate::hooks::config_loader::{HookConfigError, HookConfigLoader};
+use crate::hooks::{HookRegistry, HookScope};
 use crate::model_family::ModelFamily;
 use crate::model_family::derive_default_model_family;
 use crate::model_family::find_family_for_model;
@@ -18,8 +20,7 @@ use crate::openai_model_info::get_model_info;
 use crate::plan_mode::PlanModeConfig;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
-use crate::hooks::config_loader::{HookConfigError, HookConfigLoader};
-use crate::hooks::{HookRegistry, HookScope};
+use crate::user_notification::legacy_notify_hook;
 use anyhow::Context;
 use chrono::Utc;
 use codex_protocol::config_types::ReasoningEffort;
@@ -32,10 +33,10 @@ use dirs::home_dir;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::path::Path;
-use std::path::PathBuf;
 use std::env;
 use std::fs;
+use std::path::Path;
+use std::path::PathBuf;
 use tempfile::NamedTempFile;
 use toml::Value as TomlValue;
 use toml_edit::Array as TomlArray;
@@ -639,11 +640,7 @@ fn load_hook_registry(
     let local_scope = HookScope::LocalUser {
         codex_home: codex_home.to_path_buf(),
     };
-    push_hook_sources_for_path(
-        &mut sources,
-        &local_scope,
-        &local_dir.join("hooks.toml"),
-    );
+    push_hook_sources_for_path(&mut sources, &local_scope, &local_dir.join("hooks.toml"));
     push_hook_sources_for_path(&mut sources, &local_scope, &local_dir);
 
     if sources.is_empty() {
@@ -1151,13 +1148,21 @@ impl Config {
             plan_mode_config.plan_enabled = enabled;
         }
 
-        let hook_registry = match load_hook_registry(&codex_home, &resolved_cwd) {
+        let mut hook_registry = match load_hook_registry(&codex_home, &resolved_cwd) {
             Ok(registry) => registry,
             Err(err) => {
                 tracing::warn!("failed to load hook configuration: {}", err);
                 HookRegistry::default()
             }
         };
+
+        if let Some(notify_command) = cfg.notify.as_ref().filter(|command| !command.is_empty()) {
+            let scope = HookScope::LocalUser {
+                codex_home: codex_home.clone(),
+            };
+            let definition = legacy_notify_hook(notify_command.clone(), scope);
+            hook_registry.insert(vec![definition]);
+        }
 
         let config = Self {
             model,

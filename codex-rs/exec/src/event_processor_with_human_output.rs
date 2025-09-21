@@ -184,6 +184,12 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::TaskStarted(_) => {
                 // Ignore.
             }
+            EventMsg::HookListResponse(_)
+            | EventMsg::HookExecLogResponse(_)
+            | EventMsg::HookValidationResult(_)
+            | EventMsg::HookReloadResult(_) => {
+                // Hook inspection events are no-ops in the non-interactive CLI output.
+            }
             EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
                 if let Some(output_file) = self.last_message_path.as_deref() {
                     handle_last_message(last_agent_message.as_deref(), output_file);

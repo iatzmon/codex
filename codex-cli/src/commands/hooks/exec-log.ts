@@ -9,10 +9,26 @@ export interface ExecLogOptions {
 }
 
 export interface ExecLogRecord {
-  event: string;
-  hookId: string;
-  decision: string;
+  id: string;
   timestamp: string;
+  event: string;
+  scope: { type: string } & Record<string, unknown>;
+  hookId: string;
+  decision: {
+    decision: string;
+    message?: string;
+    systemMessage?: string;
+    stopReason?: string;
+    extra?: unknown;
+    exitCode: number;
+  };
+  durationMs: number;
+  stdout: string[];
+  stderr: string[];
+  error?: string;
+  precedenceRank: number;
+  payloadHash: string;
+  triggerId: string;
 }
 
 export async function showExecutionLog(
@@ -50,7 +66,7 @@ function renderExecLog(records: ExecLogRecord[]): void {
     Time: record.timestamp,
     Event: record.event,
     Hook: record.hookId,
-    Decision: record.decision,
+    Decision: record.decision?.decision ?? "unknown",
   }));
 
   console.table(rows);

@@ -58,22 +58,22 @@
 - [X] T029 [P] Implement `codex hooks exec-log` command in `codex-cli/src/commands/hooks/exec-log.ts`
 - [X] T030 [P] Implement `codex hooks validate` command in `codex-cli/src/commands/hooks/validate.ts`
 - [X] T031 [P] Implement `codex hooks reload` command in `codex-cli/src/commands/hooks/reload.ts`
-- [ ] T032 Register hook command namespace in `codex-cli/bin/codex.js`
+- [X] T032 Register hook command namespace in `codex-cli/bin/codex.js`
 
 ## Phase 3.4: Integration
 - [X] T033 Wire hook config loader into runtime config pipeline in `codex-rs/core/src/config.rs`
-- [ ] T034 Connect PreToolUse/PostToolUse flow to `HookExecutor` in `codex-rs/core/src/exec.rs`
-- [ ] T035 Connect user prompt and session lifecycle events to hooks in `codex-rs/core/src/conversation_manager.rs`
-- [ ] T036 Synthesize legacy notify configuration as Notification hook in `codex-rs/core/src/user_notification.rs`
-- [ ] T037 Stream execution results to JSONL log writer from `codex-rs/core/src/hooks/executor.rs`
-- [ ] T038 Surface hook registry data to TUI app state in `codex-rs/tui/src/app.rs`
-- [ ] T039 Render hook inspector panel using Stylize helpers in `codex-rs/tui/src/render/hooks_panel.rs`
+- [X] T034 Connect PreToolUse/PostToolUse flow to `HookExecutor` in `codex-rs/core/src/exec.rs`
+- [X] T035 Connect user prompt and session lifecycle events to hooks in `codex-rs/core/src/conversation_manager.rs`
+- [X] T036 Synthesize legacy notify configuration as Notification hook in `codex-rs/core/src/user_notification.rs`
+- [X] T037 Stream execution results to JSONL log writer from `codex-rs/core/src/hooks/executor.rs`
+- [X] T038 Surface hook registry data to TUI app state in `codex-rs/tui/src/app.rs`
+- [X] T039 Render hook inspector panel using Stylize helpers in `codex-rs/tui/src/render/hooks_panel.rs`
 
 ## Phase 3.5: Polish
-- [ ] T040 [P] Add unit tests for matcher and scope precedence in `codex-rs/common/tests/hook_matchers.rs`
-- [ ] T041 [P] Add CLI snapshot tests for `codex hooks list` output in `codex-cli/tests/__snapshots__/hooks_list.snap.ts`
-- [ ] T042 [P] Update documentation in `docs/config.md` and create `docs/hooks.md` covering configuration, CLI, and logs
-- [ ] T043 [P] Add benchmark ensuring HookExecutor latency <50 ms in `codex-rs/core/benches/hook_executor.rs`
+- [X] T040 [P] Add unit tests for matcher and scope precedence in `codex-rs/common/tests/hook_matchers.rs`
+- [X] T041 [P] Add CLI snapshot tests for `codex hooks list` output in `codex-cli/tests/__snapshots__/hooks_list.snap.ts`
+- [X] T042 [P] Update documentation in `docs/config.md` and create `docs/hooks.md` covering configuration, CLI, and logs
+- [X] T043 [P] Add benchmark ensuring HookExecutor latency <50 ms in `codex-rs/core/benches/hook_executor.rs`
 
 ## Dependencies
 - T005–T010 depend on setup tasks T001–T004; all tests must be green (or failing as expected) before starting T011

@@ -1385,6 +1385,10 @@ impl ChatWidget {
                 self.app_event_tx
                     .send(crate::app_event::AppEvent::ConversationHistory(ev));
             }
+            EventMsg::HookListResponse(_) => {}
+            EventMsg::HookExecLogResponse(_) => {}
+            EventMsg::HookValidationResult(_) => {}
+            EventMsg::HookReloadResult(_) => {}
             EventMsg::EnteredReviewMode(_) => {}
             EventMsg::ExitedReviewMode(_) => {}
         }

@@ -35,6 +35,8 @@ pub struct HookDefinition {
     pub source_path: Option<PathBuf>,
 }
 
+const DEFAULT_SCHEMA_VERSION: &str = "1.0";
+
 impl HookDefinition {
     pub fn new(id: impl Into<String>, event: HookEvent, scope: HookScope) -> Self {
         Self {
@@ -45,7 +47,7 @@ impl HookDefinition {
             working_dir: None,
             timeout_ms: None,
             allow_parallel: false,
-            schema_versions: vec!["1.0".to_string()],
+            schema_versions: vec![DEFAULT_SCHEMA_VERSION.to_string()],
             env: HashMap::new(),
             matchers: HookMatchers::default(),
             scope,
@@ -64,7 +66,7 @@ impl Default for HookDefinition {
             working_dir: None,
             timeout_ms: None,
             allow_parallel: false,
-            schema_versions: Vec::new(),
+            schema_versions: vec![DEFAULT_SCHEMA_VERSION.to_string()],
             env: HashMap::new(),
             matchers: HookMatchers::default(),
             scope: HookScope::default(),

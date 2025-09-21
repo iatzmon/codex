@@ -16,6 +16,7 @@ pub mod registry;
 pub mod schema_registry;
 pub mod scope;
 pub mod skipped;
+pub mod snapshot;
 
 pub use decision::{HookDecision, HookOutcome};
 pub use definition::HookDefinition;
@@ -26,3 +27,4 @@ pub use matchers::{HookMatcher, HookMatchers};
 pub use payload::{HookEvent, HookEventPayload, SandboxContext, SandboxMode};
 pub use registry::HookRegistry;
 pub use scope::HookScope;
+pub use snapshot::build_hook_registry_snapshot;

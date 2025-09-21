@@ -100,6 +100,13 @@ if (rgDir) {
 }
 const updatedPath = getUpdatedPath(additionalDirs);
 
+const argv = process.argv.slice(2);
+
+if (argv[0] === "hooks") {
+  const exitCode = await runHooksCommand(argv);
+  process.exit(exitCode);
+}
+
 const child = spawn(binaryPath, process.argv.slice(2), {
   stdio: "inherit",
   env: { ...process.env, PATH: updatedPath, CODEX_MANAGED_BY_NPM: "1" },
@@ -154,4 +161,31 @@ if (childResult.type === "signal") {
   process.kill(process.pid, childResult.signal);
 } else {
   process.exit(childResult.exitCode);
+}
+async function runHooksCommand(args) {
+  return await new Promise((resolve) => {
+    const child = spawn(binaryPath, args, {
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        PATH: updatedPath,
+        CODEX_MANAGED_BY_NPM: "1",
+        CODEX_NO_JS_HOOKS_SHIM: "1",
+      },
+    });
+
+    child.on("close", (code, signal) => {
+      if (signal) {
+        process.kill(process.pid, signal);
+      } else {
+        resolve(code ?? 1);
+      }
+    });
+
+    child.on("error", (err) => {
+      // eslint-disable-next-line no-console
+      console.error(err);
+      resolve(1);
+    });
+  });
 }

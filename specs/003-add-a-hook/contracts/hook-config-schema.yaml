@@ -1,0 +1,108 @@
+openapi: 3.1.0
+info:
+  title: Codex Hook Configuration
+  version: 0.1.0
+components:
+  schemas:
+    HookFile:
+      type: object
+      required:
+        - schemaVersion
+        - hooks
+      properties:
+        schemaVersion:
+          type: string
+          enum: ["1.0"]
+        defaultTimeoutMs:
+          type: integer
+          minimum: 1000
+          default: 60000
+        env:
+          type: object
+          additionalProperties:
+            type: string
+        hooks:
+          type: array
+          items:
+            $ref: '#/components/schemas/HookDefinition'
+    HookDefinition:
+      type: object
+      required:
+        - id
+        - event
+        - command
+        - schemaVersions
+      properties:
+        id:
+          type: string
+          pattern: "^[a-zA-Z0-9_.-]+$"
+        notes:
+          type: string
+        event:
+          type: string
+          enum:
+            - PreToolUse
+            - PostToolUse
+            - UserPromptSubmit
+            - Notification
+            - Stop
+            - SubagentStop
+            - PreCompact
+            - SessionStart
+            - SessionEnd
+        command:
+          type: array
+          items:
+            type: string
+          minItems: 1
+        workingDir:
+          type: string
+          format: unix-path
+        timeoutMs:
+          type: integer
+          minimum: 1000
+        allowParallel:
+          type: boolean
+          default: false
+        schemaVersions:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        matchers:
+          $ref: '#/components/schemas/HookMatchers'
+        env:
+          type: object
+          additionalProperties:
+            type: string
+    HookMatchers:
+      type: object
+      properties:
+        toolNames:
+          type: array
+          items:
+            $ref: '#/components/schemas/Matcher'
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/Matcher'
+        paths:
+          type: array
+          items:
+            $ref: '#/components/schemas/Matcher'
+        tags:
+          type: array
+          items:
+            type: string
+    Matcher:
+      type: object
+      required:
+        - type
+        - value
+      properties:
+        type:
+          type: string
+          enum: [exact, glob, regex]
+        value:
+          type: string
+paths: {}

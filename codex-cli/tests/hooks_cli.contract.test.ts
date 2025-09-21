@@ -30,6 +30,13 @@ describe("codex hooks cli contract", () => {
 
   it("tails execution log", async () => {
     const records = await showExecutionLog({ format: "json", tail: 1 });
-    expect(records).toEqual(expect.any(Array));
+    expect(Array.isArray(records)).toBe(true);
+    if (records.length > 0) {
+      expect(records[0]).toMatchObject({
+        event: expect.any(String),
+        hookId: expect.any(String),
+        decision: expect.objectContaining({ decision: expect.any(String) }),
+      });
+    }
   });
 });
