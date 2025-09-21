@@ -14,6 +14,10 @@ use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use crate::custom_prompts::CustomPrompt;
 use crate::mcp_protocol::ConversationId;
+use crate::hooks::{
+    HookExecLogRequest, HookExecLogResponse, HookListRequest, HookRegistrySnapshot,
+    HookReloadResponse, HookValidateRequest, HookValidationSummary,
+};
 use crate::message_history::HistoryEntry;
 use crate::models::ContentItem;
 use crate::models::ResponseItem;
@@ -158,6 +162,18 @@ pub enum Op {
 
     /// Request a single history entry identified by `log_id` + `offset`.
     GetHistoryEntryRequest { offset: usize, log_id: u64 },
+
+    /// List currently loaded hooks with optional filters.
+    HookList(HookListRequest),
+
+    /// Retrieve execution log records for hooks.
+    HookExecLog(HookExecLogRequest),
+
+    /// Run hook configuration validation.
+    HookValidate(HookValidateRequest),
+
+    /// Reload hooks for the active session.
+    HookReload,
 
     /// Request the full in-memory conversation transcript for the current session.
     /// Reply is delivered via `EventMsg::ConversationHistory`.
@@ -521,6 +537,18 @@ pub enum EventMsg {
     /// List of custom prompts available to the agent.
     ListCustomPromptsResponse(ListCustomPromptsResponseEvent),
 
+    /// Snapshot of the active hook registry.
+    HookListResponse(HookRegistrySnapshotEvent),
+
+    /// Execution log records for lifecycle hooks.
+    HookExecLogResponse(HookExecLogResponseEvent),
+
+    /// Validation summary for hooks across layers.
+    HookValidationResult(HookValidationResultEvent),
+
+    /// Outcome of a hook reload attempt.
+    HookReloadResult(HookReloadResultEvent),
+
     /// Plan Mode lifecycle notification when the session enters planning.
     PlanModeActivated(PlanModeActivatedEvent),
 
@@ -559,6 +587,30 @@ pub struct ExitedReviewModeEvent {
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 pub struct ErrorEvent {
     pub message: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct HookRegistrySnapshotEvent {
+    pub registry: HookRegistrySnapshot,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct HookExecLogResponseEvent {
+    pub logs: HookExecLogResponse,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct HookValidationResultEvent {
+    pub summary: HookValidationSummary,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct HookReloadResultEvent {
+    pub result: HookReloadResponse,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]

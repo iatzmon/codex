@@ -2090,6 +2090,42 @@ async fn submission_loop(
                     sess_clone.send_event(event).await;
                 });
             }
+            Op::HookList(_request) => {
+                let event = Event {
+                    id: sub.id.clone(),
+                    msg: EventMsg::Error(ErrorEvent {
+                        message: "hook list not implemented".to_string(),
+                    }),
+                };
+                sess.send_event(event).await;
+            }
+            Op::HookExecLog(_request) => {
+                let event = Event {
+                    id: sub.id.clone(),
+                    msg: EventMsg::Error(ErrorEvent {
+                        message: "hook exec-log not implemented".to_string(),
+                    }),
+                };
+                sess.send_event(event).await;
+            }
+            Op::HookValidate(_request) => {
+                let event = Event {
+                    id: sub.id.clone(),
+                    msg: EventMsg::Error(ErrorEvent {
+                        message: "hook validate not implemented".to_string(),
+                    }),
+                };
+                sess.send_event(event).await;
+            }
+            Op::HookReload => {
+                let event = Event {
+                    id: sub.id.clone(),
+                    msg: EventMsg::Error(ErrorEvent {
+                        message: "hook reload not implemented".to_string(),
+                    }),
+                };
+                sess.send_event(event).await;
+            }
             Op::ListMcpTools => {
                 let sub_id = sub.id.clone();
 

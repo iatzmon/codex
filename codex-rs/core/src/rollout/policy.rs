@@ -74,6 +74,10 @@ pub(crate) fn should_persist_event_msg(ev: &EventMsg) -> bool {
         | EventMsg::PlanModeExited(_)
         | EventMsg::PlanModeApplied(_)
         | EventMsg::ShutdownComplete
-        | EventMsg::ConversationPath(_) => false,
+        | EventMsg::ConversationPath(_)
+        | EventMsg::HookListResponse(_)
+        | EventMsg::HookExecLogResponse(_)
+        | EventMsg::HookValidationResult(_)
+        | EventMsg::HookReloadResult(_) => false,
     }
 }

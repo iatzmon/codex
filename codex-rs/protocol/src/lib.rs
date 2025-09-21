@@ -8,3 +8,4 @@ pub mod parse_command;
 pub mod plan_mode;
 pub mod plan_tool;
 pub mod protocol;
+pub mod hooks;
