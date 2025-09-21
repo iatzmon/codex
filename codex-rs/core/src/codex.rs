@@ -1173,6 +1173,45 @@ impl Session {
 
         let pre_hook_decision = self.run_pre_tool_hooks(&raw_command).await;
 
+        if let Some(decision) = &pre_hook_decision {
+            if decision.decision != HookOutcome::Allow {
+                let mut messages: Vec<String> = decision
+                    .message
+                    .iter()
+                    .chain(decision.system_message.iter())
+                    .cloned()
+                    .collect();
+
+                if messages.is_empty() {
+                    messages.push(format!(
+                        "Command blocked by pre-tool hook (outcome: {:?}).",
+                        decision.decision
+                    ));
+                }
+
+                let combined_message = messages.join("\n");
+                let exit_code = if decision.exit_code == 0 {
+                    1
+                } else {
+                    decision.exit_code
+                };
+
+                let output = ExecToolCallOutput {
+                    exit_code,
+                    stdout: StreamOutput::new(String::new()),
+                    stderr: StreamOutput::new(combined_message.clone()),
+                    aggregated_output: StreamOutput::new(combined_message),
+                    duration: Duration::default(),
+                    timed_out: false,
+                };
+
+                self.run_post_tool_hooks(&raw_command, Some(&output), pre_hook_decision.as_ref())
+                    .await;
+
+                return Ok(output);
+            }
+        }
+
         self.on_exec_command_begin(turn_diff_tracker, begin_ctx.clone())
             .await;
 
