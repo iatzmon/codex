@@ -53,11 +53,11 @@
 - [X] T024 Implement JSONL log writer for execution records in `codex-rs/core/src/hooks/log_writer.rs`
 - [X] T025 Extend protocol types with hook RPC messages in `codex-rs/protocol/src/protocol.rs`
 - [X] T026 Implement backend hook RPC handlers in `codex-rs/core/src/client.rs`
-- [ ] T027 Add CLI IPC helper for hook RPCs in `codex-cli/src/ipc/hooks.ts`
-- [ ] T028 [P] Implement `codex hooks list` command in `codex-cli/src/commands/hooks/list.ts`
-- [ ] T029 [P] Implement `codex hooks exec-log` command in `codex-cli/src/commands/hooks/exec-log.ts`
-- [ ] T030 [P] Implement `codex hooks validate` command in `codex-cli/src/commands/hooks/validate.ts`
-- [ ] T031 [P] Implement `codex hooks reload` command in `codex-cli/src/commands/hooks/reload.ts`
+- [X] T027 Add CLI IPC helper for hook RPCs in `codex-cli/src/ipc/hooks.ts`
+- [X] T028 [P] Implement `codex hooks list` command in `codex-cli/src/commands/hooks/list.ts`
+- [X] T029 [P] Implement `codex hooks exec-log` command in `codex-cli/src/commands/hooks/exec-log.ts`
+- [X] T030 [P] Implement `codex hooks validate` command in `codex-cli/src/commands/hooks/validate.ts`
+- [X] T031 [P] Implement `codex hooks reload` command in `codex-cli/src/commands/hooks/reload.ts`
 - [ ] T032 Register hook command namespace in `codex-cli/bin/codex.js`
 
 ## Phase 3.4: Integration

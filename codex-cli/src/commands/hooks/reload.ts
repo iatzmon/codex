@@ -1,3 +1,8 @@
+import { requestHookReload } from "../../ipc/hooks.js";
+
 export async function reloadHooks(): Promise<void> {
-  throw new Error("reloadHooks not implemented");
+  const response = await requestHookReload();
+  if (response.message) {
+    console.log(response.message);
+  }
 }
