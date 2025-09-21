@@ -52,7 +52,7 @@
 - [X] T023 Implement async `HookExecutor` runner with timeout handling in `codex-rs/core/src/hooks/executor.rs`
 - [X] T024 Implement JSONL log writer for execution records in `codex-rs/core/src/hooks/log_writer.rs`
 - [X] T025 Extend protocol types with hook RPC messages in `codex-rs/protocol/src/protocol.rs`
-- [ ] T026 Implement backend hook RPC handlers in `codex-rs/core/src/client.rs`
+- [X] T026 Implement backend hook RPC handlers in `codex-rs/core/src/client.rs`
 - [ ] T027 Add CLI IPC helper for hook RPCs in `codex-cli/src/ipc/hooks.ts`
 - [ ] T028 [P] Implement `codex hooks list` command in `codex-cli/src/commands/hooks/list.ts`
 - [ ] T029 [P] Implement `codex hooks exec-log` command in `codex-cli/src/commands/hooks/exec-log.ts`

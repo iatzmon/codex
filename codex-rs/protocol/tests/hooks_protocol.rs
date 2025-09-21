@@ -57,31 +57,40 @@ fn event_hook_list_response_serializes_snapshot() {
     let event = EventMsg::HookListResponse(HookRegistrySnapshotEvent { registry });
     let value = serde_json::to_value(event).unwrap();
     assert_eq!(value["type"], "hook_list_response");
-    assert_eq!(value["registry"]["events"]["PreToolUse"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        value["registry"]["events"]["PreToolUse"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
 fn event_hook_exec_log_response_serializes_records() {
     let response = HookExecLogResponseEvent {
         logs: HookExecLogResponse {
-            records: vec![serde_json::from_value(json!({
-                "id": "00000000-0000-0000-0000-000000000000",
-                "timestamp": "2025-09-20T12:00:00Z",
-                "event": "PreToolUse",
-                "scope": {"type": "managedPolicy", "name": "default"},
-                "hookId": "managed.guard",
-                "decision": {
-                    "decision": "Allow",
-                    "exitCode": 0,
-                    "extra": null
-                },
-                "durationMs": 42,
-                "stdout": [],
-                "stderr": [],
-                "precedenceRank": 0,
-                "payloadHash": "abc",
-                "triggerId": "turn-1"
-            })).unwrap()],
+            records: vec![
+                serde_json::from_value(json!({
+                    "id": "00000000-0000-0000-0000-000000000000",
+                    "timestamp": "2025-09-20T12:00:00Z",
+                    "event": "PreToolUse",
+                    "scope": {"type": "managedPolicy", "name": "default"},
+                    "hookId": "managed.guard",
+                    "decision": {
+                        "decision": "Allow",
+                        "exitCode": 0,
+                        "extra": null
+                    },
+                    "durationMs": 42,
+                    "stdout": [],
+                    "stderr": [],
+                    "precedenceRank": 0,
+                    "payloadHash": "abc",
+                    "triggerId": "turn-1"
+                }))
+                .unwrap(),
+            ],
         },
     };
 
@@ -98,9 +107,9 @@ fn event_hook_validation_response_serializes_summary() {
         warnings: vec!["managed policy missing schemaVersions".to_string()],
         layers: vec![],
     };
-    let value = serde_json::to_value(EventMsg::HookValidationResult(
-        HookValidationResultEvent { summary },
-    ))
+    let value = serde_json::to_value(EventMsg::HookValidationResult(HookValidationResultEvent {
+        summary,
+    }))
     .unwrap();
     assert_eq!(value["type"], "hook_validation_result");
     assert_eq!(value["summary"]["status"], "warning");

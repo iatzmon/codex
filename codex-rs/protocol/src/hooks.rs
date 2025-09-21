@@ -24,7 +24,9 @@ pub enum HookEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum HookScope {
-    ManagedPolicy { name: String },
+    ManagedPolicy {
+        name: String,
+    },
     Project {
         #[ts(type = "string")]
         project_root: PathBuf,

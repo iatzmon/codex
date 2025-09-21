@@ -105,6 +105,10 @@ use crate::protocol::ExecApprovalRequestEvent;
 use crate::protocol::ExecCommandBeginEvent;
 use crate::protocol::ExecCommandEndEvent;
 use crate::protocol::FileChange;
+use crate::protocol::HookExecLogResponseEvent;
+use crate::protocol::HookRegistrySnapshotEvent;
+use crate::protocol::HookReloadResultEvent;
+use crate::protocol::HookValidationResultEvent;
 use crate::protocol::InputItem;
 use crate::protocol::ListCustomPromptsResponseEvent;
 use crate::protocol::Op;
@@ -141,6 +145,10 @@ use crate::util::backoff;
 use codex_protocol::config_types::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::custom_prompts::CustomPrompt;
+use codex_protocol::hooks::{
+    HookExecLogResponse, HookRegistrySnapshot, HookReloadResponse, HookValidationStatus,
+    HookValidationSummary,
+};
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::LocalShellAction;
@@ -2091,10 +2099,11 @@ async fn submission_loop(
                 });
             }
             Op::HookList(_request) => {
+                let snapshot = HookRegistrySnapshot::default();
                 let event = Event {
                     id: sub.id.clone(),
-                    msg: EventMsg::Error(ErrorEvent {
-                        message: "hook list not implemented".to_string(),
+                    msg: EventMsg::HookListResponse(HookRegistrySnapshotEvent {
+                        registry: snapshot,
                     }),
                 };
                 sess.send_event(event).await;
@@ -2102,8 +2111,10 @@ async fn submission_loop(
             Op::HookExecLog(_request) => {
                 let event = Event {
                     id: sub.id.clone(),
-                    msg: EventMsg::Error(ErrorEvent {
-                        message: "hook exec-log not implemented".to_string(),
+                    msg: EventMsg::HookExecLogResponse(HookExecLogResponseEvent {
+                        logs: HookExecLogResponse {
+                            records: Vec::new(),
+                        },
                     }),
                 };
                 sess.send_event(event).await;
@@ -2111,8 +2122,13 @@ async fn submission_loop(
             Op::HookValidate(_request) => {
                 let event = Event {
                     id: sub.id.clone(),
-                    msg: EventMsg::Error(ErrorEvent {
-                        message: "hook validate not implemented".to_string(),
+                    msg: EventMsg::HookValidationResult(HookValidationResultEvent {
+                        summary: HookValidationSummary {
+                            status: HookValidationStatus::Ok,
+                            errors: Vec::new(),
+                            warnings: Vec::new(),
+                            layers: Vec::new(),
+                        },
                     }),
                 };
                 sess.send_event(event).await;
@@ -2120,8 +2136,11 @@ async fn submission_loop(
             Op::HookReload => {
                 let event = Event {
                     id: sub.id.clone(),
-                    msg: EventMsg::Error(ErrorEvent {
-                        message: "hook reload not implemented".to_string(),
+                    msg: EventMsg::HookReloadResult(HookReloadResultEvent {
+                        result: HookReloadResponse {
+                            reloaded: false,
+                            message: Some("hook reload placeholder".to_string()),
+                        },
                     }),
                 };
                 sess.send_event(event).await;
