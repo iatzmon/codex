@@ -743,6 +743,7 @@ dependencies = [
  "seccompiler",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha1",
  "shlex",
  "similar",

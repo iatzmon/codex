@@ -20,6 +20,7 @@ use crate::openai_model_info::get_model_info;
 use crate::plan_mode::PlanModeConfig;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
+use crate::subagents::{SubagentConfig, SubagentDiscoveryMode};
 use crate::user_notification::legacy_notify_hook;
 use anyhow::Context;
 use chrono::Utc;
@@ -198,6 +199,9 @@ pub struct Config {
     pub hook_registry: HookRegistry,
 
     pub plan_mode: PlanModeConfig,
+
+    /// Subagent feature configuration loaded from `config.toml`.
+    pub subagents: SubagentConfig,
 
     /// The active profile name used to derive this `Config` (if any).
     pub active_profile: Option<String>,
@@ -826,6 +830,49 @@ pub struct ConfigToml {
     /// All characters are inserted as they are received, and no buffering
     /// or placeholder replacement will occur for fast keypress bursts.
     pub disable_paste_burst: Option<bool>,
+
+    /// Subagent feature configuration.
+    pub subagents: Option<SubagentsToml>,
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct SubagentsToml {
+    pub enabled: Option<bool>,
+    pub default_model: Option<String>,
+    pub discovery: Option<SubagentDiscoveryToml>,
+}
+
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum SubagentDiscoveryToml {
+    #[default]
+    Auto,
+    Manual,
+}
+
+impl From<SubagentDiscoveryToml> for SubagentDiscoveryMode {
+    fn from(value: SubagentDiscoveryToml) -> Self {
+        match value {
+            SubagentDiscoveryToml::Auto => SubagentDiscoveryMode::Auto,
+            SubagentDiscoveryToml::Manual => SubagentDiscoveryMode::Manual,
+        }
+    }
+}
+
+impl From<SubagentsToml> for SubagentConfig {
+    fn from(toml: SubagentsToml) -> Self {
+        let discovery = toml
+            .discovery
+            .map(SubagentDiscoveryMode::from)
+            .unwrap_or(SubagentDiscoveryMode::Auto);
+
+        let default_model = toml
+            .default_model
+            .map(|model| model.trim().to_string())
+            .filter(|model| !model.is_empty());
+
+        SubagentConfig::new(toml.enabled.unwrap_or(false), default_model, discovery)
+    }
 }
 
 impl From<ConfigToml> for UserSavedConfig {
@@ -1084,6 +1131,12 @@ impl Config {
 
         let history = cfg.history.unwrap_or_default();
 
+        let subagents = cfg
+            .subagents
+            .clone()
+            .map(SubagentConfig::from)
+            .unwrap_or_default();
+
         let tools_web_search_request = override_tools_web_search_request
             .or(cfg.tools.as_ref().and_then(|t| t.web_search))
             .unwrap_or(false);
@@ -1220,6 +1273,7 @@ impl Config {
             include_view_image_tool,
             hook_registry,
             plan_mode: plan_mode_config,
+            subagents,
             active_profile: active_profile_name,
             disable_paste_burst: cfg.disable_paste_burst.unwrap_or(false),
             tui_notifications: cfg
@@ -1337,6 +1391,7 @@ pub fn log_dir(cfg: &Config) -> std::io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use crate::config_types::HistoryPersistence;
+    use crate::subagents::SubagentConfig;
 
     use super::*;
     use pretty_assertions::assert_eq;
@@ -1788,6 +1843,7 @@ model_verbosity = "high"
                 use_experimental_streamable_shell_tool: false,
                 use_experimental_unified_exec_tool: false,
                 include_view_image_tool: true,
+                subagents: SubagentConfig::default(),
                 hook_registry: HookRegistry::default(),
                 plan_mode: PlanModeConfig::default(),
                 active_profile: Some("o3".to_string()),
@@ -1848,6 +1904,7 @@ model_verbosity = "high"
             use_experimental_streamable_shell_tool: false,
             use_experimental_unified_exec_tool: false,
             include_view_image_tool: true,
+            subagents: SubagentConfig::default(),
             hook_registry: HookRegistry::default(),
             plan_mode: PlanModeConfig::default(),
             active_profile: Some("gpt3".to_string()),
@@ -1923,6 +1980,7 @@ model_verbosity = "high"
             use_experimental_streamable_shell_tool: false,
             use_experimental_unified_exec_tool: false,
             include_view_image_tool: true,
+            subagents: SubagentConfig::default(),
             hook_registry: HookRegistry::default(),
             plan_mode: PlanModeConfig::default(),
             active_profile: Some("zdr".to_string()),
@@ -1984,6 +2042,7 @@ model_verbosity = "high"
             use_experimental_streamable_shell_tool: false,
             use_experimental_unified_exec_tool: false,
             include_view_image_tool: true,
+            subagents: SubagentConfig::default(),
             hook_registry: HookRegistry::default(),
             plan_mode: PlanModeConfig::default(),
             active_profile: Some("gpt5".to_string()),

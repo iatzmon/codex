@@ -12,6 +12,11 @@ use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::SessionConfiguredEvent;
 use crate::rollout::RolloutRecorder;
+use crate::subagents::auto_suggest::suggest_subagents;
+use crate::subagents::{
+    AutoSuggestMatch, InvocationSession, SubagentBuilder, SubagentInventory,
+    SubagentInvocationError, SubagentRunner, SubagentSourceTree,
+};
 use codex_protocol::mcp_protocol::ConversationId;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InitialHistory;
@@ -20,6 +25,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::{info, warn};
 
 /// Represents a newly created Codex conversation, including the first event
 /// (which is [`EventMsg::SessionConfigured`]).
@@ -166,6 +172,45 @@ impl ConversationManager {
 
         self.finalize_spawn(codex, conversation_id, session).await
     }
+
+    /// Build the discovered subagent inventory for the provided configuration.
+    ///
+    /// The resulting inventory captures precedence, conflicts, and validation
+    /// details derived from `.codex/agents/` and `~/.codex/agents/` trees. The
+    /// method emits structured tracing for discovery diagnostics.
+    pub fn subagent_inventory(&self, config: &Config) -> SubagentInventory {
+        let inventory = build_subagent_inventory(config);
+        log_subagent_inventory(&inventory);
+        inventory
+    }
+
+    /// Generate auto-suggestions for a prompt while returning the inventory used
+    /// to evaluate precedence and validation state. Suggestions are gated by the
+    /// subagent discovery mode configured in `config.toml`.
+    pub fn auto_suggest_subagents(
+        &self,
+        config: &Config,
+        prompt: &str,
+    ) -> (SubagentInventory, Vec<AutoSuggestMatch>) {
+        let inventory = build_subagent_inventory(config);
+        log_subagent_inventory(&inventory);
+        let suggestions = suggest_subagents(&config.subagents, &inventory, prompt);
+        (inventory, suggestions)
+    }
+
+    /// Invoke a subagent by building the current inventory and delegating to the
+    /// runner. The caller supplies an `InvocationSession` describing the
+    /// requested tools, confirmation status, and optional pre-populated log
+    /// metadata. Discovery diagnostics are logged prior to execution.
+    pub fn invoke_subagent(
+        &self,
+        config: &Config,
+        session: InvocationSession,
+    ) -> Result<InvocationSession, SubagentInvocationError> {
+        let inventory = build_subagent_inventory(config);
+        log_subagent_inventory(&inventory);
+        SubagentRunner::new(&config.subagents, &inventory).invoke(session)
+    }
 }
 
 /// Return a prefix of `items` obtained by dropping the last `n` user messages
@@ -201,6 +246,59 @@ fn truncate_after_dropping_last_messages(history: InitialHistory, n: usize) -> I
         InitialHistory::New
     } else {
         InitialHistory::Forked(rolled)
+    }
+}
+
+fn build_subagent_inventory(config: &Config) -> SubagentInventory {
+    let sources = build_subagent_source_tree(config);
+    SubagentBuilder::new(config.subagents.clone())
+        .discover_tree(&sources)
+        .build()
+}
+
+fn build_subagent_source_tree(config: &Config) -> SubagentSourceTree {
+    let mut tree = SubagentSourceTree::default();
+
+    let mut project_paths = vec![config.cwd.join(".codex/agents")];
+    let mut user_paths = vec![config.codex_home.join("agents")];
+    dedup_paths(&mut project_paths);
+    dedup_paths(&mut user_paths);
+
+    tree.project = project_paths;
+    tree.user = user_paths;
+    tree
+}
+
+fn dedup_paths(paths: &mut Vec<PathBuf>) {
+    paths.sort();
+    paths.dedup();
+}
+
+fn log_subagent_inventory(inventory: &SubagentInventory) {
+    for event in &inventory.discovery_events {
+        info!(target = "codex::subagents", message = %event.message);
+    }
+
+    for conflict in &inventory.conflicts {
+        info!(
+            target = "codex::subagents",
+            name = %conflict.name,
+            losing_scope = ?conflict.losing_scope,
+            reason = %conflict.reason,
+            "subagent precedence conflict"
+        );
+    }
+
+    for record in inventory.invalid() {
+        if record.validation_errors.is_empty() {
+            continue;
+        }
+        warn!(
+            target = "codex::subagents",
+            name = %record.definition.name,
+            errors = ?record.validation_errors,
+            "invalid subagent definition"
+        );
     }
 }
 
