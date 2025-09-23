@@ -578,6 +578,14 @@ fn create_invoke_subagent_tool(registration: &SubagentToolRegistration) -> OpenA
             description: Some("Optional model override for this subagent run.".to_string()),
         },
     );
+    properties.insert(
+        "confirmed".to_string(),
+        JsonSchema::Boolean {
+            description: Some(
+                "Set to true after the user explicitly approves invoking the subagent when auto discovery is enabled.".to_string(),
+            ),
+        },
+    );
 
     OpenAiTool::Function(ResponsesApiTool {
         name: "invoke_subagent".to_string(),

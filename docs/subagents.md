@@ -63,7 +63,8 @@ decide whether delegation is appropriate. The function accepts the following arg
   "name": "code-reviewer",
   "instructions": "Explain the changes in docs/",
   "requested_tools": ["git_diff"],
-  "model": "gpt-4.1-mini"
+  "model": "gpt-4.1-mini",
+  "confirmed": true
 }
 ```
 
@@ -71,9 +72,15 @@ Codex confirms that the subagent exists, applies tool/model restrictions, and re
 detail URI (for example `agents://code-reviewer/sessions/latest`). The summary is sent back to the
 model so it can incorporate the result into the broader conversation.
 
-Because invocations now flow through the tool pipeline, the TUI no longer interrupts the transcript
-with keyword-based suggestions. Instead, results appear inline—either through the assistant's
-follow-up message or via the `codex agents` CLI commands.
+When `discovery = "auto"`, Codex rejects the first tool call with a
+`ConfirmationRequired` error. The assistant should surface that prompt to the
+user, and only retry the invocation once the user explicitly approves by
+setting `"confirmed": true`. Manual discovery mode skips this confirmation step.
+
+Because invocations now flow through the tool pipeline, the TUI no longer
+interrupts the transcript with keyword-based suggestions. Instead, results
+appear inline—either through the assistant's follow-up message or via the
+`codex agents` CLI commands.
 
 ## Invocation summaries and detail links
 

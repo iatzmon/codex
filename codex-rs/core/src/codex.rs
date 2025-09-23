@@ -147,6 +147,7 @@ use crate::subagents::SubagentInventory;
 use crate::subagents::SubagentInvocationError;
 use crate::subagents::SubagentRunner;
 use crate::subagents::build_inventory_for_config;
+use crate::subagents::config::SubagentDiscoveryMode;
 use crate::subagents::execute_subagent_invocation;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use crate::unified_exec::UnifiedExecSessionManager;
@@ -3641,6 +3642,8 @@ async fn handle_function_call(
                 requested_tools: Vec<String>,
                 #[serde(default)]
                 model: Option<String>,
+                #[serde(default)]
+                confirmed: bool,
             }
 
             let args = match serde_json::from_str::<InvokeSubagentArgs>(&arguments) {
@@ -3678,7 +3681,6 @@ async fn handle_function_call(
             };
 
             let mut session = InvocationSession::new(args.name.trim());
-            session = session.confirmed();
             session.parent_session_id = Some(sess.conversation_id.to_string());
             if !args.requested_tools.is_empty() {
                 session.requested_tools = args.requested_tools.clone();
@@ -3692,9 +3694,15 @@ async fn handle_function_call(
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
             {
+                session.extra_instructions = Some(instructions.to_string());
                 session
                     .execution_log
                     .push(format!("instructions: {instructions}"));
+            }
+
+            if args.confirmed || matches!(subagent_config.discovery, SubagentDiscoveryMode::Manual)
+            {
+                session = session.confirmed();
             }
 
             let runner = SubagentRunner::new(&subagent_config, inventory_arc.as_ref());

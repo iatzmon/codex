@@ -118,3 +118,23 @@ fn invoke_requires_confirmation_for_auto_suggest() {
         Err(SubagentInvocationError::ConfirmationRequired(name)) if name == "code-reviewer"
     ));
 }
+
+#[test]
+fn invoke_preserves_extra_instructions() {
+    let config = SubagentConfig::enabled(SubagentDiscoveryMode::Manual);
+    let definition = make_definition("code-reviewer", SubagentScope::Project);
+    let inventory = inventory_from_definition(&config, definition.clone());
+    let runner = SubagentRunner::new(&config, &inventory);
+
+    let mut session = InvocationSession::new("code-reviewer").confirmed();
+    session.extra_instructions = Some("Focus on regression tests".into());
+
+    let prepared = runner
+        .invoke(session)
+        .expect("invocation should carry extra instructions");
+
+    assert_eq!(
+        prepared.session.extra_instructions.as_deref(),
+        Some("Focus on regression tests")
+    );
+}

@@ -272,9 +272,48 @@ pub async fn execute_subagent_invocation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::subagents::config::{SubagentConfig, SubagentDiscoveryMode};
+    use crate::subagents::definition::{SubagentDefinition, SubagentScope};
+    use crate::subagents::record::SubagentRecord;
     use codex_protocol::protocol::{
         AgentMessageDeltaEvent, AgentMessageEvent, EventMsg, TaskCompleteEvent,
     };
+    use std::path::PathBuf;
+
+    #[test]
+    fn format_instruction_block_adds_extra_request() {
+        let mut definition = SubagentDefinition::new(
+            "code-reviewer",
+            "Reviews staged diffs",
+            SubagentScope::Project,
+            PathBuf::from("/tmp/code-reviewer.md"),
+        );
+        definition.instructions = "Review the staged diffs.".into();
+        definition.tools = vec!["git_diff".into()];
+
+        let config = SubagentConfig::enabled(SubagentDiscoveryMode::Auto);
+        let record = SubagentRecord::from_definition(definition.clone(), &config);
+
+        let mut session = InvocationSession::new(&definition.name).confirmed();
+        session.extra_instructions = Some("  Focus on the docs folder  ".into());
+
+        let prepared = PreparedSubagentInvocation {
+            session: session.clone(),
+            record,
+        };
+
+        let block = format_instruction_block(
+            &definition.instructions,
+            session.extra_instructions.as_deref(),
+            &prepared,
+        );
+
+        assert!(
+            block.contains("Additional request:\nFocus on the docs folder"),
+            "{block}"
+        );
+        assert!(block.contains("Allowed tools: git_diff"), "{block}");
+    }
 
     #[test]
     fn capture_agent_output_accumulates_deltas() {
