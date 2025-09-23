@@ -67,6 +67,7 @@ pub mod shell;
 #[cfg(feature = "slash_commands")]
 pub mod slash_commands;
 pub mod spawn;
+pub mod subagents;
 pub mod terminal;
 mod tool_apply_patch;
 pub mod turn_diff_tracker;

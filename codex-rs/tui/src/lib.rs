@@ -77,6 +77,7 @@ use crate::onboarding::TrustDirectorySelection;
 use crate::onboarding::onboarding_screen::OnboardingScreenArgs;
 use crate::onboarding::onboarding_screen::run_onboarding_app;
 use crate::tui::Tui;
+pub use chatwidget::subagent_quickstart_steps;
 pub use cli::Cli;
 use codex_core::internal_storage::InternalStorage;
 

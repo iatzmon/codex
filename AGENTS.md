@@ -14,3 +14,9 @@ Unit tests should use `pretty_assertions::assert_eq` for readable diffs. Follow 
 
 ## Commit & Pull Request Guidelines
 Write commits in the imperative mood (e.g., `Add default plan-mode shell rules`) and keep them focused on a single concern. Pull requests should summarize the change, reference related issues, and call out user-facing impacts. Include test evidence (`cargo test -p …`, `cargo insta pending-snapshots`) in the PR description, and attach screenshots for TUI updates when visuals change.
+
+## Subagents
+Codex now supports project and user-scoped subagents. Enable the feature in `~/.codex/config.toml`,
+then manage agents through the `codex agents` CLI or the interactive TUI. The transcript shows
+override precedence, summaries, and detail URIs after each run. See `docs/subagents.md` for the
+complete workflow and examples.

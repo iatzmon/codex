@@ -7,7 +7,10 @@
   },
   "type": "module",
   "scripts": {
-    "build": "node ./scripts/dev_build.mjs"
+    "build": "tsup src/index.ts --format esm,cjs --splitting --dts",
+    "build:watch": "tsup src/index.ts --format esm,cjs --splitting --dts --watch",
+    "test": "vitest run",
+    "lint": "prettier --check 'src/**/*.{ts,tsx}' 'tests/**/*.ts'"
   },
   "engines": {
     "node": ">=20"
@@ -19,12 +22,6 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/openai/codex.git"
-  },
-  "scripts": {
-    "build": "tsup src/index.ts --format esm,cjs --splitting --dts",
-    "build:watch": "tsup src/index.ts --format esm,cjs --splitting --dts --watch",
-    "test": "vitest run",
-    "lint": "prettier --check 'src/**/*.{ts,tsx}' 'tests/**/*.ts'"
   },
   "dependencies": {
     "@vscode/ripgrep": "^1.15.14"

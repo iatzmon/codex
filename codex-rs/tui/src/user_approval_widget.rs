@@ -521,6 +521,7 @@ mod tests {
                 alternatives: Vec::new(),
                 rollback: Vec::new(),
                 success_criteria: Vec::new(),
+                metadata: None,
             },
         }
     }

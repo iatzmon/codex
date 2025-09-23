@@ -59,6 +59,20 @@ Below are a few bite-size examples you can copy-paste. Replace the text in quote
 | 6   | `codex "Carefully review this repo, and propose 3 high impact well-scoped PRs"` | Suggests impactful PRs in the current codebase.                            |
 | 7   | `codex "Look for vulnerabilities and create a security review report"`          | Finds and explains security bugs.                                          |
 
+### Subagents quickstart
+
+1. Enable the feature by adding `subagents.enabled = true` (and optionally `default_model`) to
+   `~/.codex/config.toml`.
+2. Create `.codex/agents/<name>.md` inside your project with YAML frontmatter (`name`,
+   `description`, optional `tools` and `model`). Project definitions override user-scoped ones.
+3. List discovered agents with `codex agents list` to confirm scope precedence and validation status.
+4. Invoke an agent directly via `codex agents run <name>` or ask the assistant in chat—the
+   `invoke_subagent` tool carries the inventory each turn so the model can delegate when appropriate.
+5. Review the summary and the `agents://` detail link in the CLI output or conversation history, and
+   inspect full metadata with `codex agents show <name>`.
+
+See `docs/subagents.md` for deeper guidance and troubleshooting tips.
+
 ### Memory with AGENTS.md
 
 You can give Codex extra instructions and guidance using `AGENTS.md` files. Codex looks for `AGENTS.md` files in the following places, and merges them top-down:

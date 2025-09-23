@@ -77,6 +77,7 @@ use crate::mcp_tool_call::handle_mcp_tool_call;
 use crate::model_family::find_family_for_model;
 use crate::openai_model_info::get_model_info;
 use crate::openai_tools::ApplyPatchToolArgs;
+use crate::openai_tools::SubagentToolRegistration;
 use crate::openai_tools::ToolsConfig;
 use crate::openai_tools::ToolsConfigParams;
 use crate::openai_tools::get_openai_tools;
@@ -140,6 +141,13 @@ use crate::slash_commands::CommandInvocation;
 use crate::slash_commands::InvocationError;
 #[cfg(feature = "slash_commands")]
 use crate::slash_commands::SlashCommandService;
+use crate::subagents::InvocationSession;
+use crate::subagents::SubagentConfig;
+use crate::subagents::SubagentInventory;
+use crate::subagents::SubagentInvocationError;
+use crate::subagents::SubagentRunner;
+use crate::subagents::build_inventory_for_config;
+use crate::subagents::execute_subagent_invocation;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use crate::unified_exec::UnifiedExecSessionManager;
 use crate::user_instructions::UserInstructions;
@@ -364,6 +372,9 @@ pub(crate) struct TurnContext {
     pub(crate) shell_environment_policy: ShellEnvironmentPolicy,
     pub(crate) tools_config: ToolsConfig,
     pub(crate) is_review_mode: bool,
+    pub(crate) subagent_inventory: Option<Arc<SubagentInventory>>,
+    pub(crate) subagent_tool: Option<SubagentToolRegistration>,
+    pub(crate) subagent_config: Option<SubagentConfig>,
 }
 
 impl TurnContext {
@@ -372,6 +383,24 @@ impl TurnContext {
             .map(PathBuf::from)
             .map_or_else(|| self.cwd.clone(), |p| self.cwd.join(p))
     }
+}
+
+fn compute_subagent_tooling(
+    config: &Config,
+) -> (
+    Option<Arc<SubagentInventory>>,
+    Option<SubagentToolRegistration>,
+    Option<SubagentConfig>,
+) {
+    if !config.subagents.is_enabled() {
+        return (None, None, None);
+    }
+
+    let inventory = build_inventory_for_config(config);
+    let registration = SubagentToolRegistration::from_inventory(&config.subagents, &inventory);
+    let subagent_config = Some(config.subagents.clone());
+
+    (Some(Arc::new(inventory)), registration, subagent_config)
 }
 
 /// Configure the model session.
@@ -432,8 +461,9 @@ async fn handle_slash_command_turn(
         per_turn_config.model_context_window = Some(model_info.context_window);
     }
 
+    let per_turn_config = Arc::new(per_turn_config);
     let client = ModelClient::new(
-        Arc::new(per_turn_config),
+        per_turn_config.clone(),
         auth_manager,
         provider,
         base_context.client.get_reasoning_effort(),
@@ -453,6 +483,9 @@ async fn handle_slash_command_turn(
         experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
     });
 
+    let (subagent_inventory, subagent_tool, subagent_config) =
+        compute_subagent_tooling(per_turn_config.as_ref());
+
     let turn_context = TurnContext {
         client,
         tools_config,
@@ -463,6 +496,9 @@ async fn handle_slash_command_turn(
         shell_environment_policy: base_context.shell_environment_policy.clone(),
         cwd: base_context.cwd.clone(),
         is_review_mode: base_context.is_review_mode,
+        subagent_inventory,
+        subagent_tool,
+        subagent_config,
     };
 
     let task = AgentTask::spawn(sess.clone(), Arc::new(turn_context), sub_id, items);
@@ -599,6 +635,9 @@ impl Session {
             model_reasoning_summary,
             conversation_id,
         );
+        let (subagent_inventory, subagent_tool, subagent_config) =
+            compute_subagent_tooling(config.as_ref());
+
         let mut turn_context = TurnContext {
             client,
             tools_config: ToolsConfig::new(&ToolsConfigParams {
@@ -619,6 +658,9 @@ impl Session {
             shell_environment_policy: config.shell_environment_policy.clone(),
             cwd,
             is_review_mode: false,
+            subagent_inventory,
+            subagent_tool,
+            subagent_config,
         };
 
         if config.plan_mode.plan_enabled {
@@ -1973,8 +2015,9 @@ async fn submission_loop(
                     updated_config.model_context_window = Some(model_info.context_window);
                 }
 
+                let updated_config = Arc::new(updated_config);
                 let client = ModelClient::new(
-                    Arc::new(updated_config),
+                    updated_config.clone(),
                     auth_manager,
                     provider,
                     effective_effort,
@@ -2000,6 +2043,9 @@ async fn submission_loop(
                     experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
                 });
 
+                let (subagent_inventory, subagent_tool, subagent_config) =
+                    compute_subagent_tooling(updated_config.as_ref());
+
                 let new_turn_context = TurnContext {
                     client,
                     tools_config,
@@ -2010,6 +2056,9 @@ async fn submission_loop(
                     shell_environment_policy: prev.shell_environment_policy.clone(),
                     cwd: new_cwd.clone(),
                     is_review_mode: false,
+                    subagent_inventory,
+                    subagent_tool,
+                    subagent_config,
                 };
 
                 // Install the new persistent context for subsequent tasks/turns.
@@ -2186,14 +2235,18 @@ async fn submission_loop(
 
                     // Build a new client with per‑turn reasoning settings.
                     // Reuse the same provider and session id; auth defaults to env/API key.
+                    let per_turn_config = Arc::new(per_turn_config);
                     let client = ModelClient::new(
-                        Arc::new(per_turn_config),
+                        per_turn_config.clone(),
                         auth_manager,
                         provider,
                         effort,
                         summary,
                         sess.conversation_id,
                     );
+
+                    let (subagent_inventory, subagent_tool, subagent_config) =
+                        compute_subagent_tooling(per_turn_config.as_ref());
 
                     let fresh_turn_context = TurnContext {
                         client,
@@ -2217,6 +2270,9 @@ async fn submission_loop(
                         shell_environment_policy: turn_context.shell_environment_policy.clone(),
                         cwd,
                         is_review_mode: false,
+                        subagent_inventory,
+                        subagent_tool,
+                        subagent_config,
                     };
 
                     // if the environment context has changed, record it in the conversation history
@@ -2421,6 +2477,9 @@ async fn submission_loop(
                             shell_environment_policy: previous.shell_environment_policy.clone(),
                             cwd: previous.cwd.clone(),
                             is_review_mode: previous.is_review_mode,
+                            subagent_inventory: previous.subagent_inventory.clone(),
+                            subagent_tool: previous.subagent_tool.clone(),
+                            subagent_config: previous.subagent_config.clone(),
                         });
                         sess.ensure_plan_mode_prompt_recorded().await;
                     }
@@ -2462,6 +2521,9 @@ async fn submission_loop(
                         shell_environment_policy: previous.shell_environment_policy.clone(),
                         cwd: previous.cwd.clone(),
                         is_review_mode: previous.is_review_mode,
+                        subagent_inventory: previous.subagent_inventory.clone(),
+                        subagent_tool: previous.subagent_tool.clone(),
+                        subagent_config: previous.subagent_config.clone(),
                     });
                 }
                 Err(message) => {
@@ -2505,6 +2567,9 @@ async fn submission_loop(
                         shell_environment_policy: previous.shell_environment_policy.clone(),
                         cwd: previous.cwd.clone(),
                         is_review_mode: previous.is_review_mode,
+                        subagent_inventory: previous.subagent_inventory.clone(),
+                        subagent_tool: previous.subagent_tool.clone(),
+                        subagent_config: previous.subagent_config.clone(),
                     });
 
                     let follow_up_sub_id =
@@ -2635,14 +2700,18 @@ async fn spawn_review_thread(
         per_turn_config.model_context_window = Some(model_info.context_window);
     }
 
+    let per_turn_config = Arc::new(per_turn_config);
     let client = ModelClient::new(
-        Arc::new(per_turn_config),
+        per_turn_config.clone(),
         auth_manager,
         provider,
         parent_turn_context.client.get_reasoning_effort(),
         parent_turn_context.client.get_reasoning_summary(),
         sess.conversation_id,
     );
+
+    let (subagent_inventory, subagent_tool, subagent_config) =
+        compute_subagent_tooling(per_turn_config.as_ref());
 
     let review_turn_context = TurnContext {
         client,
@@ -2654,6 +2723,9 @@ async fn spawn_review_thread(
         shell_environment_policy: parent_turn_context.shell_environment_policy.clone(),
         cwd: parent_turn_context.cwd.clone(),
         is_review_mode: true,
+        subagent_inventory,
+        subagent_tool,
+        subagent_config,
     };
 
     // Seed the child task with the review prompt as the initial user message.
@@ -3010,6 +3082,7 @@ async fn run_turn(
     let tools = get_openai_tools(
         &turn_context.tools_config,
         Some(sess.mcp_connection_manager.list_all_tools()),
+        turn_context.subagent_tool.as_ref(),
     );
 
     let prompt = Prompt {
@@ -3557,6 +3630,164 @@ async fn handle_function_call(
                 },
             };
             ResponseInputItem::FunctionCallOutput { call_id, output }
+        }
+        "invoke_subagent" => {
+            #[derive(Deserialize)]
+            struct InvokeSubagentArgs {
+                name: String,
+                #[serde(default)]
+                instructions: Option<String>,
+                #[serde(default)]
+                requested_tools: Vec<String>,
+                #[serde(default)]
+                model: Option<String>,
+            }
+
+            let args = match serde_json::from_str::<InvokeSubagentArgs>(&arguments) {
+                Ok(args) => args,
+                Err(err) => {
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload {
+                            content: format!("failed to parse function arguments: {err}"),
+                            success: Some(false),
+                        },
+                    };
+                }
+            };
+
+            let Some(inventory_arc) = turn_context.subagent_inventory.as_ref().map(Arc::clone)
+            else {
+                return ResponseInputItem::FunctionCallOutput {
+                    call_id,
+                    output: FunctionCallOutputPayload {
+                        content: "Subagents feature is disabled for this session.".to_string(),
+                        success: Some(false),
+                    },
+                };
+            };
+            let Some(subagent_config) = turn_context.subagent_config.clone() else {
+                return ResponseInputItem::FunctionCallOutput {
+                    call_id,
+                    output: FunctionCallOutputPayload {
+                        content:
+                            "Subagents configuration is unavailable; enable subagents.enabled in config.".to_string(),
+                        success: Some(false),
+                    },
+                };
+            };
+
+            let mut session = InvocationSession::new(args.name.trim());
+            session = session.confirmed();
+            session.parent_session_id = Some(sess.conversation_id.to_string());
+            if !args.requested_tools.is_empty() {
+                session.requested_tools = args.requested_tools.clone();
+            }
+            if let Some(model) = args.model.clone() {
+                session.resolved_model = Some(model);
+            }
+            if let Some(instructions) = args
+                .instructions
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                session
+                    .execution_log
+                    .push(format!("instructions: {instructions}"));
+            }
+
+            let runner = SubagentRunner::new(&subagent_config, inventory_arc.as_ref());
+            match runner.invoke(session) {
+                Ok(prepared) => {
+                    let config_arc = turn_context.client.get_config();
+                    let auth_manager = match turn_context.client.get_auth_manager() {
+                        Some(manager) => manager,
+                        None => {
+                            return ResponseInputItem::FunctionCallOutput {
+                                call_id,
+                                output: FunctionCallOutputPayload {
+                                    content: "Subagent execution requires authentication context."
+                                        .to_string(),
+                                    success: Some(false),
+                                },
+                            };
+                        }
+                    };
+
+                    match execute_subagent_invocation(config_arc.as_ref(), auth_manager, prepared)
+                        .await
+                    {
+                        Ok(result_session) => {
+                            let detail_artifacts: Vec<String> = result_session
+                                .detail_artifacts
+                                .iter()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .collect();
+                            let payload_json = serde_json::json!({
+                                "name": result_session.subagent_name,
+                                "summary": result_session.summary,
+                                "detail_artifacts": detail_artifacts,
+                                "requested_tools": result_session.requested_tools,
+                                "model": result_session.resolved_model,
+                                "execution_log": result_session.execution_log,
+                            });
+
+                            ResponseInputItem::FunctionCallOutput {
+                                call_id,
+                                output: FunctionCallOutputPayload {
+                                    content: payload_json.to_string(),
+                                    success: Some(true),
+                                },
+                            }
+                        }
+                        Err(err) => {
+                            let message = err.to_string();
+                            ResponseInputItem::FunctionCallOutput {
+                                call_id,
+                                output: FunctionCallOutputPayload {
+                                    content: message,
+                                    success: Some(false),
+                                },
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    let message = match err {
+                        SubagentInvocationError::FeatureDisabled => {
+                            "Subagents feature is disabled.".to_string()
+                        }
+                        SubagentInvocationError::UnknownSubagent(name) => {
+                            format!("No subagent named '{name}'.")
+                        }
+                        SubagentInvocationError::InvalidSubagent(name) => {
+                            format!("Subagent '{name}' is invalid.")
+                        }
+                        SubagentInvocationError::DisabledSubagent(name) => {
+                            format!("Subagent '{name}' is disabled.")
+                        }
+                        SubagentInvocationError::ToolNotAllowed { subagent, tool } => {
+                            format!("Tool '{tool}' not allowed for subagent '{subagent}'.")
+                        }
+                        SubagentInvocationError::ConfirmationRequired(name) => {
+                            format!("Confirmation required before invoking subagent '{name}'.")
+                        }
+                        SubagentInvocationError::ExecutionFailed(reason) => reason,
+                        SubagentInvocationError::MissingAuthManager => {
+                            "Subagent execution requires authentication context.".to_string()
+                        }
+                    };
+
+                    ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload {
+                            content: message,
+                            success: Some(false),
+                        },
+                    }
+                }
+            }
         }
         "apply_patch" => {
             let args = match serde_json::from_str::<ApplyPatchToolArgs>(&arguments) {
@@ -4683,6 +4914,8 @@ mod tests {
             include_view_image_tool: config.include_view_image_tool,
             experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
         });
+        let (subagent_inventory, subagent_tool, subagent_config) =
+            compute_subagent_tooling(config.as_ref());
         let turn_context = TurnContext {
             client,
             cwd: config.cwd.clone(),
@@ -4693,6 +4926,9 @@ mod tests {
             shell_environment_policy: config.shell_environment_policy.clone(),
             tools_config,
             is_review_mode: false,
+            subagent_inventory,
+            subagent_tool,
+            subagent_config,
         };
         let session = Session {
             conversation_id,

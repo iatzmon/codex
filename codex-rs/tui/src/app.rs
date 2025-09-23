@@ -217,6 +217,7 @@ impl App {
                 };
                 ChatWidget::new_from_existing(
                     init,
+                    conversation_manager.clone(),
                     resumed.conversation,
                     resumed.session_configured,
                 )
@@ -746,6 +747,7 @@ mod tests {
                 alternatives: Vec::new(),
                 rollback: Vec::new(),
                 success_criteria: Vec::new(),
+                metadata: None,
             },
         };
 

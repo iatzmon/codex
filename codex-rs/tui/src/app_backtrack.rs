@@ -348,8 +348,12 @@ impl App {
             #[cfg(feature = "slash_commands")]
             custom_slash_commands: self.custom_slash_commands.clone(),
         };
-        let chat_widget =
-            crate::chatwidget::ChatWidget::new_from_existing(init, conv, session_configured);
+        let chat_widget = crate::chatwidget::ChatWidget::new_from_existing(
+            init,
+            self.server.clone(),
+            conv,
+            session_configured,
+        );
         self.finish_installing_forked_chat_widget(
             tui,
             chat_widget,

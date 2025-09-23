@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use clap::{Parser, Subcommand, ValueEnum};
 use codex_common::CliConfigOverrides;
 use codex_core::config::{Config, ConfigOverrides};
@@ -10,7 +8,7 @@ use codex_core::subagents::{
 };
 use codex_core::{AuthManager, ConversationManager};
 use serde::Serialize;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Entry point for the `codex agents` command family.
 #[derive(Debug, Parser)]
@@ -142,7 +140,7 @@ async fn run_run(
         session.requested_tools = cmd.tool.clone();
     }
 
-    let result = manager.invoke_subagent(config, session);
+    let result = manager.invoke_subagent(config, session).await;
     match result {
         Ok(response) => {
             if cmd.json {

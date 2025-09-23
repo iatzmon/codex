@@ -78,17 +78,24 @@
 - [X] T026 [P] Implement `codex agents show` command in `/home/iatzmon/workspace/codex/codex-cli/src/commands/agents/show.ts` including detail transcript retrieval.
 - [X] T027 Update exports and CLI surface by editing `/home/iatzmon/workspace/codex/codex-cli/src/index.ts` (and `/home/iatzmon/workspace/codex/codex-cli/package.json` bin mappings if required) to expose the new agents commands.
 - [X] T028 [P] Add Node-based integration tests for agents commands in `/home/iatzmon/workspace/codex/codex-cli/tests/agents.test.ts` covering list/run/show flows.
-- [ ] T029 Update TUI history/detail rendering to show subagent scope, overrides, and detail links in `/home/iatzmon/workspace/codex/codex-rs/tui/src/history_cell.rs`.
-- [ ] T030 Update TUI chat widget to surface auto-suggestion prompts and confirmation flow in `/home/iatzmon/workspace/codex/codex-rs/tui/src/chatwidget.rs` and related components.
-- [ ] T031 Ensure sandbox guards apply during subagent invocation by updating `/home/iatzmon/workspace/codex/codex-rs/core/src/spawn.rs` to propagate `CODEX_SANDBOX` / `CODEX_SANDBOX_NETWORK_DISABLED` checks for subagent sessions.
-- [ ] T032 Emit structured logs for discovery, overrides, suggestions, and invocation summaries in `/home/iatzmon/workspace/codex/codex-rs/core/src/event_mapping.rs` (or a dedicated subagents logging module linked from there).
+- [X] T029 Update TUI history/detail rendering to show subagent scope, overrides, and detail links in `/home/iatzmon/workspace/codex/codex-rs/tui/src/history_cell.rs`.
+- [X] T030 Update TUI chat widget to surface auto-suggestion prompts and confirmation flow in `/home/iatzmon/workspace/codex/codex-rs/tui/src/chatwidget.rs` and related components.
+- [X] T031 Ensure sandbox guards apply during subagent invocation by updating `/home/iatzmon/workspace/codex/codex-rs/core/src/spawn.rs` to propagate `CODEX_SANDBOX` / `CODEX_SANDBOX_NETWORK_DISABLED` checks for subagent sessions.
+- [X] T032 Emit structured logs for discovery, overrides, suggestions, and invocation summaries in `/home/iatzmon/workspace/codex/codex-rs/core/src/event_mapping.rs` (or a dedicated subagents logging module linked from there).
 
 ## Phase 3.5: Polish
-- [ ] T033 [P] Add regression tests for config fallback ordering in `/home/iatzmon/workspace/codex/codex-rs/core/tests/subagents_config.rs` (cover enabled=false short circuit and default model hierarchy).
-- [ ] T034 [P] Add regression tests for tool access denials and session transcript persistence in `/home/iatzmon/workspace/codex/codex-rs/core/tests/subagents_invocation.rs`.
-- [ ] T035 [P] Document subagent workflow in `/home/iatzmon/workspace/codex/docs/subagents.md` and update `/home/iatzmon/workspace/codex/AGENTS.md` with CLI usage and precedence notes.
-- [ ] T036 [P] Refresh getting started flow with subagent quickstart steps in `/home/iatzmon/workspace/codex/docs/getting-started.md` and cross-link the new docs page.
-- [ ] T037 Run end-to-end verification: `cargo test -p codex-core`, `cargo test -p codex-tui`, `cargo test --all-features`, and `pnpm build` from `/home/iatzmon/workspace/codex`.
+- [X] T033 [P] Add regression tests for config fallback ordering in `/home/iatzmon/workspace/codex/codex-rs/core/tests/subagents_config.rs` (cover enabled=false short circuit and default model hierarchy).
+- [X] T034 [P] Add regression tests for tool access denials and session transcript persistence in `/home/iatzmon/workspace/codex/codex-rs/core/tests/subagents_invocation.rs`.
+- [X] T035 [P] Document subagent workflow in `/home/iatzmon/workspace/codex/docs/subagents.md` and update `/home/iatzmon/workspace/codex/AGENTS.md` with CLI usage and precedence notes.
+- [X] T036 [P] Refresh getting started flow with subagent quickstart steps in `/home/iatzmon/workspace/codex/docs/getting-started.md` and cross-link the new docs page.
+- [X] T037 Run end-to-end verification: `cargo test -p codex-core`, `cargo test -p codex-tui`, `cargo test --all-features`, and `pnpm build` from `/home/iatzmon/workspace/codex`.
+
+## Phase 3.6: Tool Migration
+- [X] T038 Wire subagent inventory into `invoke_subagent` tool registration by updating `/home/iatzmon/workspace/codex/codex-rs/core/src/codex.rs` and `/home/iatzmon/workspace/codex/codex-rs/core/src/openai_tools.rs` to surface metadata for all discovered subagents each turn.
+- [X] T039 Handle `invoke_subagent` tool calls inside Codex by parsing arguments, delegating to `SubagentRunner`, and returning structured results; edit `/home/iatzmon/workspace/codex/codex-rs/core/src/codex.rs` and supporting subagent modules as needed.
+- [X] T040 Remove keyword-based auto-suggestion flows from `/home/iatzmon/workspace/codex/codex-rs/core/src/conversation_manager.rs` and TUI components under `/home/iatzmon/workspace/codex/codex-rs/tui/src/` so subagents operate solely through the tool API.
+- [X] T041 Update automated coverage in `/home/iatzmon/workspace/codex/codex-rs/core/tests/` and `/home/iatzmon/workspace/codex/codex-rs/tui/tests/` plus documentation under `/home/iatzmon/workspace/codex/docs/` to reflect tool-driven subagents.
+- [X] T042 Re-run validation commands (`cargo test -p codex-core`, `cargo test -p codex-tui`, `cargo test --all-features`, `pnpm build`) from `/home/iatzmon/workspace/codex` after migrations.
 
 ## Dependencies
 - T002 depends on T001.
@@ -98,6 +105,8 @@
 - TypeScript IPC/command tasks T023–T027 require Rust CLI endpoints (T021–T022).
 - T029–T032 rely on core services (T009–T020) being available.
 - Polish tasks T033–T037 execute after core + integration tasks complete.
+- Tool migration tasks T038–T041 execute after prior subagent infrastructure (T009–T032) and polish tasks (T033–T037) are in place.
+- Validation task T042 depends on completing T038–T041.
 
 ## Parallel Example
 ```
