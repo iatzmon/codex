@@ -58,18 +58,6 @@ pub(crate) async fn spawn_child_async(
         cmd.env(key, value);
     }
 
-    if !env.contains_key(CODEX_SANDBOX_ENV_VAR) {
-        if let Ok(value) = std::env::var(CODEX_SANDBOX_ENV_VAR) {
-            cmd.env(CODEX_SANDBOX_ENV_VAR, value);
-        }
-    }
-
-    if !env.contains_key(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR) {
-        if let Ok(value) = std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR) {
-            cmd.env(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR, value);
-        }
-    }
-
     if !sandbox_policy.has_full_network_access() {
         cmd.env(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR, "1");
     }

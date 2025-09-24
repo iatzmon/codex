@@ -213,6 +213,14 @@ pub struct Config {
 }
 
 impl Config {
+    pub fn cwd(&self) -> &PathBuf {
+        &self.cwd
+    }
+
+    pub fn codex_home(&self) -> &PathBuf {
+        &self.codex_home
+    }
+
     /// Load configuration with *generic* CLI overrides (`-c key=value`) applied
     /// **in between** the values parsed from `config.toml` and the
     /// strongly-typed overrides specified via [`ConfigOverrides`].

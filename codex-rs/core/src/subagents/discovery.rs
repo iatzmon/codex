@@ -77,15 +77,6 @@ pub fn discover_from_source(source: DiscoverySource) -> DiscoveryOutcome {
                         ),
                     });
                 }
-                Err(SubagentParserError::Validation(error)) => {
-                    outcome.events.push(DiscoveryEvent {
-                        message: format!(
-                            "Invalid subagent definition at {}: {}",
-                            path.display(),
-                            error.message
-                        ),
-                    });
-                }
             },
             Err(error) => outcome.events.push(DiscoveryEvent {
                 message: format!(

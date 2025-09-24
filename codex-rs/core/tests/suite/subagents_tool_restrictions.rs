@@ -17,7 +17,7 @@ fn restricted_definition() -> SubagentDefinition {
         model: None,
         instructions: "Review staged diffs without running arbitrary shell commands.".into(),
         scope: SubagentScope::Project,
-        source_path: PathBuf::from("/home/iatzmon/workspace/codex/.codex/agents/shell-guard.md"),
+        source_path: PathBuf::from("/workspace/codex/.codex/agents/shell-guard.md"),
         validation_errors: Vec::new(),
     }
 }

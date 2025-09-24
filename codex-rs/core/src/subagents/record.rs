@@ -20,10 +20,10 @@ pub struct SubagentRecord {
 impl SubagentRecord {
     pub fn from_definition(definition: SubagentDefinition, config: &SubagentConfig) -> Self {
         let mut status = SubagentStatus::Active;
-        if !config.enabled {
-            status = SubagentStatus::Disabled;
-        } else if !definition.validation_errors.is_empty() {
+        if !definition.validation_errors.is_empty() {
             status = SubagentStatus::Invalid;
+        } else if !config.enabled {
+            status = SubagentStatus::Disabled;
         }
 
         let effective_model = if let Some(model) = &definition.model {

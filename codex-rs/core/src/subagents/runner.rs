@@ -57,12 +57,13 @@ impl<'a> SubagentRunner<'a> {
             .inventory
             .subagents
             .get(&session.subagent_name)
+            .cloned()
             .or_else(|| {
                 self.inventory
                     .invalid()
                     .into_iter()
                     .find(|record| record.definition.name == session.subagent_name)
-                    .map(|record| record)
+                    .cloned()
             })
             .ok_or_else(|| {
                 SubagentInvocationError::UnknownSubagent(session.subagent_name.clone())
@@ -114,9 +115,6 @@ impl<'a> SubagentRunner<'a> {
             session.detail_artifacts.clear();
         }
 
-        Ok(PreparedSubagentInvocation {
-            session,
-            record: record.clone(),
-        })
+        Ok(PreparedSubagentInvocation { session, record })
     }
 }

@@ -34,15 +34,33 @@ export interface SubagentErrorPayload {
   error: string;
 }
 
+const DEFAULT_COMMAND_TIMEOUT_MS = (() => {
+  const value = process.env.CODEX_AGENTS_TIMEOUT_MS;
+  if (!value) {
+    return 120_000;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 120_000;
+})();
+
+const KILL_GRACE_PERIOD_MS = 5_000;
+
 type CommandResult = {
   stdout: string;
   stderr: string;
   code: number;
+  signal?: NodeJS.Signals | null;
+};
+
+type CommandExecutionOptions = {
+  timeoutMs?: number;
 };
 
 export interface ListOptions {
   scope?: Scope;
   includeInvalid?: boolean;
+  timeoutMs?: number;
 }
 
 export async function fetchSubagentList(
@@ -55,7 +73,9 @@ export async function fetchSubagentList(
   if (options.includeInvalid) {
     args.push("--invalid");
   }
-  const result = await runCodexAgentsCommand(args);
+  const result = await runCodexAgentsCommand(args, {
+    timeoutMs: options.timeoutMs,
+  });
   ensureSuccess(result, "codex agents list");
   const payload = result.stdout.trim() || "{}";
   return normalizeListPayload(JSON.parse(payload) as RawListPayload);
@@ -63,6 +83,7 @@ export async function fetchSubagentList(
 
 export interface RunOptions {
   tools?: string[];
+  timeoutMs?: number;
 }
 
 export async function invokeSubagent(
@@ -73,7 +94,9 @@ export async function invokeSubagent(
   for (const tool of options.tools ?? []) {
     args.push("--tool", tool);
   }
-  const result = await runCodexAgentsCommand(args);
+  const result = await runCodexAgentsCommand(args, {
+    timeoutMs: options.timeoutMs,
+  });
   return parseRunResult(result, name);
 }
 
@@ -96,16 +119,46 @@ function ensureSuccess(result: CommandResult, command: string): void {
 function buildCommandError(command: string, result: CommandResult): Error {
   const output = result.stderr.trim() || result.stdout.trim();
   const context = output.length > 0 ? `: ${output}` : "";
-  return new Error(`${command} failed with exit code ${result.code}${context}`);
+  const signalSuffix = result.signal ? ` (signal ${result.signal})` : "";
+  const error = new Error(
+    `${command} failed with exit code ${result.code}${signalSuffix}${context}`,
+  );
+  (error as { stdout?: string }).stdout = result.stdout;
+  (error as { stderr?: string }).stderr = result.stderr;
+  (error as { exitCode?: number }).exitCode = result.code;
+  if (result.signal) {
+    (error as { signal?: NodeJS.Signals | null }).signal = result.signal;
+  }
+  return error;
 }
 
-async function runCodexAgentsCommand(args: string[]): Promise<CommandResult> {
+async function runCodexAgentsCommand(
+  args: string[],
+  options: CommandExecutionOptions = {},
+): Promise<CommandResult> {
   const binary = resolveCodexBinary();
   ensureCodexHome();
 
   return new Promise<CommandResult>((resolve, reject) => {
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
+    let completed = false;
+    let killTimer: NodeJS.Timeout | undefined;
+
+    const resolveTimeoutMs = (): number | undefined => {
+      if (typeof options.timeoutMs === "number" && options.timeoutMs > 0) {
+        return options.timeoutMs;
+      }
+      if (options.timeoutMs === 0) {
+        return undefined;
+      }
+      return DEFAULT_COMMAND_TIMEOUT_MS;
+    };
+
+    const collectOutput = () => ({
+      stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+      stderr: Buffer.concat(stderrChunks).toString("utf8"),
+    });
 
     const child = spawn(binary, args, {
       cwd: process.cwd(),
@@ -117,17 +170,102 @@ async function runCodexAgentsCommand(args: string[]): Promise<CommandResult> {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    child.stdout.on("data", (chunk) => stdoutChunks.push(chunk));
-    child.stderr.on("data", (chunk) => stderrChunks.push(chunk));
+    const onStdout = (chunk: Buffer) => stdoutChunks.push(chunk);
+    const onStderr = (chunk: Buffer) => stderrChunks.push(chunk);
+    child.stdout.on("data", onStdout);
+    child.stderr.on("data", onStderr);
 
-    child.on("error", (err) => reject(err));
-    child.on("close", (code) => {
-      resolve({
-        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
-        stderr: Buffer.concat(stderrChunks).toString("utf8"),
+    const clearTimersAndListeners = () => {
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = undefined;
+      }
+      if (killTimer) {
+        clearTimeout(killTimer);
+        killTimer = undefined;
+      }
+      child.stdout.off("data", onStdout);
+      child.stderr.off("data", onStderr);
+      child.off("error", onError);
+      child.off("close", onClose);
+    };
+
+    const settleReject = (error: Error) => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      clearTimersAndListeners();
+      reject(error);
+    };
+
+    const settleResolve = (result: CommandResult) => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      clearTimersAndListeners();
+      resolve(result);
+    };
+
+    const timeoutMs = resolveTimeoutMs();
+    let timeoutTimer: NodeJS.Timeout | undefined;
+    if (typeof timeoutMs === "number") {
+      timeoutTimer = setTimeout(() => {
+            const { stdout, stderr } = collectOutput();
+            child.kill("SIGTERM");
+            killTimer = setTimeout(() => {
+              if (!completed) {
+                child.kill("SIGKILL");
+              }
+            }, KILL_GRACE_PERIOD_MS);
+
+            const message: string[] = [
+              `codex agents command timed out after ${timeoutMs}ms`,
+              `command: ${binary} ${args.join(" ")}`,
+            ];
+            if (stdout.length > 0) {
+              message.push(`stdout:\n${stdout}`);
+            }
+            if (stderr.length > 0) {
+              message.push(`stderr:\n${stderr}`);
+            }
+
+            const timeoutError = new Error(message.join("\n\n"));
+            (timeoutError as NodeJS.ErrnoException).code = "ETIMEDOUT";
+            (timeoutError as { stdout?: string }).stdout = stdout;
+            (timeoutError as { stderr?: string }).stderr = stderr;
+            (timeoutError as { timeoutMs?: number }).timeoutMs = timeoutMs;
+
+            settleReject(timeoutError);
+          }, timeoutMs);
+    }
+
+    const onError = (err: Error) => {
+      const { stdout, stderr } = collectOutput();
+      const error = new Error(
+        [`Failed to launch codex agents command: ${binary} ${args.join(" ")}`, err.message]
+          .filter(Boolean)
+          .join("\n"),
+      );
+      (error as { cause?: Error }).cause = err;
+      (error as { stdout?: string }).stdout = stdout;
+      (error as { stderr?: string }).stderr = stderr;
+      settleReject(error);
+    };
+
+    const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
+      const { stdout, stderr } = collectOutput();
+      settleResolve({
+        stdout,
+        stderr,
         code: code ?? 1,
+        signal,
       });
-    });
+    };
+
+    child.on("error", onError);
+    child.on("close", onClose);
   });
 }
 

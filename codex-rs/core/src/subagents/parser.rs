@@ -2,14 +2,12 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::subagents::definition::{SubagentDefinition, SubagentScope, SubagentValidationError};
+use crate::subagents::definition::{SubagentDefinition, SubagentScope};
 
 #[derive(thiserror::Error, Debug)]
 pub enum SubagentParserError {
     #[error("failed to parse subagent file: {0}")]
     ParseError(String),
-    #[error("subagent validation error: {0:?}")]
-    Validation(SubagentValidationError),
 }
 
 #[derive(Debug, Deserialize, Default)]

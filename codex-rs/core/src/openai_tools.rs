@@ -1455,6 +1455,24 @@ mod tests {
         if let JsonSchema::Object { properties, .. } = invoke_tool.parameters {
             assert!(properties.contains_key("name"));
             assert!(properties.contains_key("instructions"));
+            assert!(properties.contains_key("requested_tools"));
+            assert!(properties.contains_key("model"));
+
+            let requested_tools_schema = properties
+                .get("requested_tools")
+                .expect("requested_tools schema");
+            match requested_tools_schema {
+                JsonSchema::Array { items, .. } => match items.as_ref() {
+                    JsonSchema::String { .. } => {}
+                    other => panic!("requested_tools items should be string schema, got {other:?}"),
+                },
+                other => panic!("requested_tools should be an array schema, got {other:?}"),
+            }
+
+            match properties.get("model").expect("model schema") {
+                JsonSchema::String { .. } => {}
+                other => panic!("model should be string schema, got {other:?}"),
+            }
         } else {
             panic!("invoke_subagent should expose object parameters");
         }

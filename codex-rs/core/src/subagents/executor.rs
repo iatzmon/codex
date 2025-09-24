@@ -209,9 +209,13 @@ pub async fn execute_subagent_invocation(
     let mut last_message: Option<String> = None;
     let mut message_buffer: Option<String> = None;
     loop {
-        let event = codex
-            .next_event()
+        let event = tokio::time::timeout(std::time::Duration::from_secs(300), codex.next_event())
             .await
+            .map_err(|_| {
+                SubagentInvocationError::ExecutionFailed(
+                    "timed out waiting for subagent response after 300s".to_string(),
+                )
+            })?
             .map_err(|err| SubagentInvocationError::ExecutionFailed(err.to_string()))?;
         if event.id != submit_id {
             continue;

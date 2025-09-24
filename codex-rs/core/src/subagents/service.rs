@@ -12,8 +12,8 @@ use super::inventory::SubagentInventory;
 pub fn source_tree_from_config(config: &Config) -> SubagentSourceTree {
     let mut tree = SubagentSourceTree::default();
 
-    let mut project_paths = vec![config.cwd.join(".codex/agents")];
-    let mut user_paths = vec![config.codex_home.join("agents")];
+    let mut project_paths = vec![config.cwd().join(".codex/agents")];
+    let mut user_paths = vec![config.codex_home().join("agents")];
     dedup_paths(&mut project_paths);
     dedup_paths(&mut user_paths);
 
