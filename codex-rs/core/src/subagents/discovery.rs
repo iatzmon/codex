@@ -57,11 +57,10 @@ pub fn discover_from_source(source: DiscoverySource) -> DiscoveryOutcome {
         return outcome;
     }
 
-    for entry in WalkDir::new(&root)
-        .follow_links(false)
-        .into_iter()
-    {
-        let entry = match entry {
+    let walker = WalkDir::new(&root).follow_links(false);
+
+    for entry_result in walker.into_iter() {
+        let entry = match entry_result {
             Ok(e) => e,
             Err(err) => {
                 outcome.events.push(DiscoveryEvent {
@@ -70,9 +69,6 @@ pub fn discover_from_source(source: DiscoverySource) -> DiscoveryOutcome {
                 continue;
             }
         };
-        .into_iter()
-        .filter_map(Result::ok)
-    {
         if !entry.file_type().is_file() {
             continue;
         }
