@@ -51,6 +51,12 @@ pub fn discover_from_source(source: DiscoverySource) -> DiscoveryOutcome {
     let mut outcome = DiscoveryOutcome::default();
 
     if !root.exists() {
+        outcome.events.push(DiscoveryEvent {
+            message: format!("Discovery root does not exist: {}", root.display()),
+        });
+        return outcome;
+    }
+
     for entry in WalkDir::new(&root)
         .follow_links(false)
         .into_iter()
