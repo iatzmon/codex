@@ -28,6 +28,7 @@ use codex_core::protocol::McpToolCallEndEvent;
 use codex_core::protocol::Op;
 use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::StreamErrorEvent;
+use codex_core::protocol::SubagentApprovalRequestEvent;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TokenUsage;
 use codex_core::protocol::TokenUsageInfo;
@@ -453,6 +454,19 @@ impl ChatWidget {
             |q| q.push_apply_patch_approval(id, ev),
             |s| s.handle_apply_patch_approval_now(id2, ev2),
         );
+    }
+
+    fn on_subagent_approval_request(&mut self, event: SubagentApprovalRequestEvent) {
+        self.bottom_pane
+            .push_approval_request(ApprovalRequest::Subagent {
+                name: event.subagent,
+                description: event.description,
+                extra_instructions: event.extra_instructions,
+                allowed_tools: event.allowed_tools,
+                requested_tools: event.requested_tools,
+                model: event.model,
+            });
+        self.request_redraw();
     }
 
     fn on_exec_command_begin(&mut self, ev: ExecCommandBeginEvent) {
@@ -1361,6 +1375,7 @@ impl ChatWidget {
             EventMsg::ApplyPatchApprovalRequest(ev) => {
                 self.on_apply_patch_approval_request(id.unwrap_or_default(), ev)
             }
+            EventMsg::SubagentApprovalRequest(event) => self.on_subagent_approval_request(event),
             EventMsg::ExecCommandBegin(ev) => self.on_exec_command_begin(ev),
             EventMsg::ExecCommandOutputDelta(delta) => self.on_exec_command_output_delta(delta),
             EventMsg::PatchApplyBegin(ev) => self.on_patch_apply_begin(ev),

@@ -165,8 +165,17 @@ function resolveCodexBinary(): string {
     return workspaceRelease;
   }
 
-  const fallback = path.resolve(cliRoot, "../bin", binaryName());
-  return fallback;
+  const triple = detectTargetTriple();
+  if (triple) {
+    const packaged = path.resolve(cliRoot, "bin", `codex-${triple}`);
+    if (existsSync(packaged)) {
+      return packaged;
+    }
+  }
+
+  throw new Error(
+    "Unable to locate Codex CLI binary. Set CODEX_CLI_BIN to the compiled codex executable.",
+  );
 }
 
 function ensureCodexHome(): void {
@@ -190,6 +199,43 @@ function binaryName(): string {
 
 function fileDirectory(): string {
   return path.dirname(fileURLToPath(import.meta.url));
+}
+
+function detectTargetTriple(): string | null {
+  const platform = os.platform();
+  const arch = os.arch();
+
+  if (platform === "linux" || platform === "android") {
+    if (arch === "x64") {
+      return "x86_64-unknown-linux-musl";
+    }
+    if (arch === "arm64") {
+      return "aarch64-unknown-linux-musl";
+    }
+    return null;
+  }
+
+  if (platform === "darwin") {
+    if (arch === "x64") {
+      return "x86_64-apple-darwin";
+    }
+    if (arch === "arm64") {
+      return "aarch64-apple-darwin";
+    }
+    return null;
+  }
+
+  if (platform === "win32") {
+    if (arch === "x64") {
+      return "x86_64-pc-windows-msvc.exe";
+    }
+    if (arch === "arm64") {
+      return "aarch64-pc-windows-msvc.exe";
+    }
+    return null;
+  }
+
+  return null;
 }
 
 type RawRecordPayload = {

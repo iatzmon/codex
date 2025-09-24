@@ -184,6 +184,18 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::TaskStarted(_) => {
                 // Ignore.
             }
+            EventMsg::SubagentApprovalRequest(request) => {
+                let name = request.subagent.as_str();
+                ts_println!(
+                    self,
+                    "{}",
+                    format!(
+                        "Auto-denying subagent '{}' – interactive approval is not supported in CLI mode.",
+                        name
+                    )
+                    .style(self.dimmed)
+                );
+            }
             EventMsg::HookListResponse(_)
             | EventMsg::HookExecLogResponse(_)
             | EventMsg::HookValidationResult(_)

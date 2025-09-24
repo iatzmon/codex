@@ -81,8 +81,12 @@ pub fn parse_definition(
         definition = definition.with_model(Some(model.to_string()));
     }
 
-    if !body.trim().is_empty() {
-        definition.instructions = body.trim().to_string();
+    let trimmed_body = body.trim();
+    if trimmed_body.is_empty() {
+        definition
+            .add_validation_error("subagent definition must include a Markdown instructions body");
+    } else {
+        definition.instructions = trimmed_body.to_string();
     }
 
     if raw

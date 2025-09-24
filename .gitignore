@@ -41,6 +41,7 @@ CLAUDE.md
 .nyc_output/
 .jest/
 *.tsbuildinfo
+.codex/agents/sessions/
 
 # logs
 *.log

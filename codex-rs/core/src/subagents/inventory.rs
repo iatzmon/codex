@@ -54,42 +54,58 @@ impl SubagentInventory {
         for (name, mut defs) in grouped {
             defs.sort_by(|a, b| scope_precedence(b.scope).cmp(&scope_precedence(a.scope)));
 
-            let mut defs_iter = defs.into_iter();
-            let chosen = defs_iter
-                .next()
-                .expect("grouped collection should always have at least one item");
-            let record = SubagentRecord::from_definition(chosen.clone(), config);
+            let records: Vec<SubagentRecord> = defs
+                .into_iter()
+                .map(|definition| SubagentRecord::from_definition(definition, config))
+                .collect();
 
-            if record.is_invalid() {
-                inventory.invalid_records.push(record);
-            } else if matches!(record.status, SubagentStatus::Disabled) {
-                inventory.discovery_events.push(DiscoveryEvent {
-                    message: format!(
-                        "subagent '{}' skipped because feature is disabled",
-                        chosen.name
-                    ),
-                });
-            } else {
-                inventory.subagents.insert(name.clone(), record);
+            let chosen_idx = records
+                .iter()
+                .position(|record| matches!(record.status, SubagentStatus::Active));
+
+            if let Some(idx) = chosen_idx {
+                inventory
+                    .subagents
+                    .insert(name.clone(), records[idx].clone());
             }
 
-            for losing in defs_iter {
-                let reason = if chosen.scope != losing.scope {
-                    "project override".to_string()
+            let chosen_scope = chosen_idx.map(|idx| records[idx].definition.scope);
+
+            for (idx, record) in records.iter().enumerate() {
+                match record.status {
+                    SubagentStatus::Invalid => inventory.invalid_records.push(record.clone()),
+                    SubagentStatus::Disabled => inventory.discovery_events.push(DiscoveryEvent {
+                        message: format!(
+                            "subagent '{}' skipped because feature is disabled",
+                            record.definition.name
+                        ),
+                    }),
+                    SubagentStatus::Active => {}
+                }
+
+                if Some(idx) == chosen_idx {
+                    continue;
+                }
+
+                let reason = if record.is_invalid() {
+                    "invalid definition".to_string()
+                } else if matches!(record.status, SubagentStatus::Disabled) {
+                    "disabled subagent".to_string()
+                } else if let Some(chosen_scope) = chosen_scope {
+                    if chosen_scope != record.definition.scope {
+                        "project override".to_string()
+                    } else {
+                        "duplicate definition".to_string()
+                    }
                 } else {
-                    "duplicate definition".to_string()
+                    "no active definition available".to_string()
                 };
 
                 inventory.conflicts.push(SubagentConflict {
-                    name: losing.name.clone(),
-                    losing_scope: losing.scope,
+                    name: record.definition.name.clone(),
+                    losing_scope: record.definition.scope,
                     reason,
                 });
-
-                let losing_record = SubagentRecord::from_definition(losing, config);
-                if losing_record.is_invalid() {
-                    inventory.invalid_records.push(losing_record);
-                }
             }
         }
 

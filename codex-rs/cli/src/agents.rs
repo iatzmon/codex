@@ -135,7 +135,8 @@ async fn run_run(
     config: &Config,
     manager: &ConversationManager,
 ) -> anyhow::Result<()> {
-    let mut session = InvocationSession::new(cmd.name.clone()).confirmed();
+    let normalized_name = SubagentDefinition::normalize_name(&cmd.name);
+    let mut session = InvocationSession::new(normalized_name).confirmed();
     if !cmd.tool.is_empty() {
         session.requested_tools = cmd.tool.clone();
     }

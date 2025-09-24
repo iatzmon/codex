@@ -16,8 +16,12 @@ pub enum SubagentInvocationError {
     DisabledSubagent(String),
     #[error("tool '{tool}' is not allowed for subagent '{subagent}'")]
     ToolNotAllowed { subagent: String, tool: String },
-    #[error("confirmation required before invoking subagent '{0}'")]
-    ConfirmationRequired(String),
+    #[error("confirmation required before invoking subagent '{subagent}'")]
+    ConfirmationRequired {
+        subagent: String,
+        record: SubagentRecord,
+        session: InvocationSession,
+    },
     #[error("subagent execution failed: {0}")]
     ExecutionFailed(String),
     #[error("subagent invocation requires authentication manager")]
@@ -79,9 +83,11 @@ impl<'a> SubagentRunner<'a> {
         }
 
         if matches!(self.config.discovery, SubagentDiscoveryMode::Auto) && !session.confirmed {
-            return Err(SubagentInvocationError::ConfirmationRequired(
-                record.definition.name.clone(),
-            ));
+            return Err(SubagentInvocationError::ConfirmationRequired {
+                subagent: record.definition.name.clone(),
+                record: record.clone(),
+                session,
+            });
         }
 
         for tool in &session.requested_tools {

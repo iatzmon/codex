@@ -78,6 +78,7 @@ pub(crate) fn should_persist_event_msg(ev: &EventMsg) -> bool {
         | EventMsg::HookListResponse(_)
         | EventMsg::HookExecLogResponse(_)
         | EventMsg::HookValidationResult(_)
-        | EventMsg::HookReloadResult(_) => false,
+        | EventMsg::HookReloadResult(_)
+        | EventMsg::SubagentApprovalRequest(_) => false,
     }
 }

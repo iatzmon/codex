@@ -20,6 +20,7 @@ use codex_core::protocol::Event;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::InputItem;
 use codex_core::protocol::Op;
+use codex_core::protocol::SubagentApprovalDecision;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_ollama::DEFAULT_OSS_MODEL;
 use codex_protocol::config_types::SandboxMode;
@@ -28,6 +29,7 @@ use event_processor_with_json_output::EventProcessorWithJsonOutput;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
+use tracing::warn;
 use tracing_subscriber::EnvFilter;
 
 use crate::cli::Command as ExecCommand;
@@ -243,6 +245,17 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
                     }
                     res = conversation.next_event() => match res {
                         Ok(event) => {
+                            if let Some(op) = auto_deny_subagent_request(&event) {
+                                let subagent = match &op {
+                                    Op::SubagentApproval { name, .. } => name.clone(),
+                                    _ => String::new(),
+                                };
+                                warn!("Auto-denying subagent '{subagent}' in non-interactive mode");
+                                if let Err(err) = conversation.submit(op).await {
+                                    error!("Failed to auto-deny subagent invocation: {err:?}");
+                                }
+                            }
+
                             debug!("Received event: {event:?}");
 
                             let is_shutdown_complete = matches!(event.msg, EventMsg::ShutdownComplete);
@@ -309,6 +322,17 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     Ok(())
 }
 
+fn auto_deny_subagent_request(event: &Event) -> Option<Op> {
+    if let EventMsg::SubagentApprovalRequest(request) = &event.msg {
+        Some(Op::SubagentApproval {
+            name: request.subagent.clone(),
+            decision: SubagentApprovalDecision::Denied,
+        })
+    } else {
+        None
+    }
+}
+
 async fn resolve_resume_path(
     config: &Config,
     args: &crate::cli::ResumeArgs,
@@ -326,5 +350,46 @@ async fn resolve_resume_path(
         Ok(path)
     } else {
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_core::protocol::{Event, EventMsg, SubagentApprovalRequestEvent, TaskCompleteEvent};
+
+    #[test]
+    fn auto_deny_subagent_request_returns_op() {
+        let event = Event {
+            id: "1".into(),
+            msg: EventMsg::SubagentApprovalRequest(SubagentApprovalRequestEvent {
+                subagent: "code-reviewer".into(),
+                description: Some("Reviews staged diffs".into()),
+                extra_instructions: None,
+                allowed_tools: vec!["git_diff".into()],
+                requested_tools: vec!["git_diff".into()],
+                model: Some("gpt-4.1-mini".into()),
+            }),
+        };
+
+        match auto_deny_subagent_request(&event) {
+            Some(Op::SubagentApproval { name, decision }) => {
+                assert_eq!(name, "code-reviewer");
+                assert_eq!(decision, SubagentApprovalDecision::Denied);
+            }
+            other => panic!("expected auto-deny op, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auto_deny_subagent_request_ignores_other_events() {
+        let event = Event {
+            id: "2".into(),
+            msg: EventMsg::TaskComplete(TaskCompleteEvent {
+                last_agent_message: Some("done".into()),
+            }),
+        };
+
+        assert!(auto_deny_subagent_request(&event).is_none());
     }
 }

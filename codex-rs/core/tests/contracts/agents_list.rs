@@ -103,3 +103,47 @@ fn agents_list_filters_invalid_definitions() {
         .collect();
     assert_eq!(invalid, vec!["broken-agent"]);
 }
+
+#[test]
+fn project_invalid_falls_back_to_user_definition() {
+    let config = SubagentConfig::enabled(SubagentDiscoveryMode::Auto);
+
+    let mut project_def = make_definition(
+        "code-reviewer",
+        SubagentScope::Project,
+        "/home/iatzmon/workspace/codex/.codex/agents/code-reviewer.md",
+    );
+    project_def
+        .validation_errors
+        .push("missing instructions".into());
+
+    let user_def = make_definition(
+        "code-reviewer",
+        SubagentScope::User,
+        "/home/user/.codex/agents/code-reviewer.md",
+    );
+
+    let inventory = SubagentBuilder::new(config)
+        .with_definitions(vec![project_def.clone(), user_def.clone()])
+        .build();
+
+    let record = inventory
+        .subagents
+        .get("code-reviewer")
+        .expect("user definition should be selected when project is invalid");
+    assert_eq!(record.definition.scope, SubagentScope::User);
+
+    let invalid: Vec<_> = inventory
+        .invalid()
+        .into_iter()
+        .map(|record| record.definition.source_path.clone())
+        .collect();
+    assert_eq!(invalid, vec![project_def.source_path.clone()]);
+
+    let conflict = inventory
+        .conflicts
+        .iter()
+        .find(|conflict| conflict.losing_scope == SubagentScope::Project)
+        .expect("invalid project definition should be captured as conflict");
+    assert_eq!(conflict.reason, "invalid definition");
+}

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use serde::Serialize;
+use uuid::Uuid;
 
 use crate::AuthManager;
 use crate::codex::{Codex, CodexSpawnOk};
@@ -11,7 +12,9 @@ use crate::config::Config;
 use crate::model_family::find_family_for_model;
 use crate::openai_model_info::get_model_info;
 use crate::subagents::config::SubagentConfig;
+use crate::subagents::definition::SubagentScope;
 use crate::subagents::invocation::InvocationSession;
+use crate::subagents::record::SubagentRecord;
 use crate::subagents::runner::{PreparedSubagentInvocation, SubagentInvocationError};
 use codex_protocol::protocol::{Event, EventMsg, InitialHistory, InputItem, Op};
 
@@ -27,27 +30,31 @@ struct TranscriptPayload {
     events: Vec<Event>,
 }
 
-fn storage_dir(record_path: &Path) -> PathBuf {
-    let base = record_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("sessions")
+fn storage_dir(base_dir: &Path, record: &SubagentRecord) -> PathBuf {
+    let scope_dir = match record.definition.scope {
+        SubagentScope::Project => "project",
+        SubagentScope::User => "user",
+    };
+
+    base_dir
+        .join("agents")
+        .join(scope_dir)
+        .join(&record.definition.name)
+        .join("sessions")
 }
 
 fn persist_transcript(
-    record_path: &Path,
+    dir: &Path,
     payload: &TranscriptPayload,
 ) -> Result<PathBuf, SubagentInvocationError> {
-    let dir = storage_dir(record_path);
-    fs::create_dir_all(&dir).map_err(|err| {
+    fs::create_dir_all(dir).map_err(|err| {
         SubagentInvocationError::ExecutionFailed(format!(
             "failed to prepare transcript directory: {err}"
         ))
     })?;
 
     let timestamp = &payload.timestamp;
-    let artifact_path = dir.join(format!("{timestamp}.json"));
+    let artifact_path = dir.join(format!("{timestamp}-{}.json", Uuid::new_v4()));
     let body = serde_json::to_vec_pretty(payload).map_err(|err| {
         SubagentInvocationError::ExecutionFailed(format!("failed to serialize transcript: {err}"))
     })?;
@@ -243,7 +250,8 @@ pub async fn execute_subagent_invocation(
         events: transcript.clone(),
     };
 
-    let artifact_path = persist_transcript(&record.definition.source_path, &payload)?;
+    let transcript_dir = storage_dir(&config.codex_home, &record);
+    let artifact_path = persist_transcript(&transcript_dir, &payload)?;
 
     // Attempt graceful shutdown; ignore errors.
     let _ = codex.submit(Op::Shutdown).await;
@@ -279,6 +287,7 @@ mod tests {
         AgentMessageDeltaEvent, AgentMessageEvent, EventMsg, TaskCompleteEvent,
     };
     use std::path::PathBuf;
+    use tempfile::tempdir;
 
     #[test]
     fn format_instruction_block_adds_extra_request() {
@@ -378,5 +387,60 @@ mod tests {
         );
         assert!(!should_break);
         assert_eq!(last.as_deref(), Some("complete message"));
+    }
+
+    #[test]
+    fn persist_transcript_writes_unique_files() {
+        let temp = tempdir().expect("create temp dir");
+        let dir = temp.path().join("sessions");
+
+        let payload = TranscriptPayload {
+            subagent: "code-reviewer".into(),
+            timestamp: "20250101T000000Z".into(),
+            model: None,
+            requested_tools: Vec::new(),
+            instructions: "Run the review checklist.".into(),
+            extra_instructions: None,
+            events: Vec::new(),
+        };
+
+        let first = persist_transcript(&dir, &payload).expect("first transcript");
+        let second = persist_transcript(&dir, &payload).expect("second transcript");
+
+        assert_ne!(
+            first, second,
+            "subsequent transcripts should not overwrite one another"
+        );
+        assert!(first.exists(), "first transcript path should exist");
+        assert!(second.exists(), "second transcript path should exist");
+        assert!(
+            dir.join("latest.json").exists(),
+            "latest pointer should be written"
+        );
+    }
+
+    #[test]
+    fn storage_dir_uses_codex_home_scope_and_name() {
+        let temp = tempdir().expect("create temp dir");
+        let mut definition = SubagentDefinition::new(
+            "code-reviewer",
+            "Reviews diffs",
+            SubagentScope::Project,
+            temp.path().join("code-reviewer.md"),
+        );
+        definition.instructions = "Inspect changes.".into();
+
+        let config = SubagentConfig::enabled(SubagentDiscoveryMode::Auto);
+        let record = SubagentRecord::from_definition(definition, &config);
+
+        let path = storage_dir(temp.path(), &record);
+        assert_eq!(
+            path,
+            temp.path()
+                .join("agents")
+                .join("project")
+                .join("code-reviewer")
+                .join("sessions")
+        );
     }
 }

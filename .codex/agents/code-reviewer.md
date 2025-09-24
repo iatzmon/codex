@@ -1,6 +1,6 @@
 ---
 name: code-reviewer
-description: Provides a thorough code review of the current changeset; invoke whenever changes are ready for review or touch multiple modules/safety-critical paths
+description: Provides a thorough code review of the current changeset; PROACTIVELY invoke whenever the user asks to review a PR, branch, feature, documentation or any other code-review related task
 ---
 
 Review the current branch against `origin/main` and produce a concise report:

@@ -113,10 +113,18 @@ fn invoke_requires_confirmation_for_auto_suggest() {
     };
 
     let result = runner.invoke(session);
-    assert!(matches!(
-        result,
-        Err(SubagentInvocationError::ConfirmationRequired(name)) if name == "code-reviewer"
-    ));
+    match result {
+        Err(SubagentInvocationError::ConfirmationRequired {
+            subagent,
+            record,
+            session,
+        }) => {
+            assert_eq!(subagent, "code-reviewer");
+            assert_eq!(record.definition.description, definition.description);
+            assert_eq!(session.requested_tools, vec!["git_diff".to_string()]);
+        }
+        other => panic!("expected confirmation required error, got {other:?}"),
+    }
 }
 
 #[test]

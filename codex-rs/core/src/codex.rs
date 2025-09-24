@@ -123,6 +123,8 @@ use crate::protocol::ReviewOutputEvent;
 use crate::protocol::SandboxPolicy;
 use crate::protocol::SessionConfiguredEvent;
 use crate::protocol::StreamErrorEvent;
+use crate::protocol::SubagentApprovalDecision;
+use crate::protocol::SubagentApprovalRequestEvent;
 use crate::protocol::Submission;
 use crate::protocol::TaskCompleteEvent;
 use crate::protocol::TokenUsage;
@@ -143,6 +145,7 @@ use crate::slash_commands::InvocationError;
 use crate::slash_commands::SlashCommandService;
 use crate::subagents::InvocationSession;
 use crate::subagents::SubagentConfig;
+use crate::subagents::SubagentDefinition;
 use crate::subagents::SubagentInventory;
 use crate::subagents::SubagentInvocationError;
 use crate::subagents::SubagentRunner;
@@ -321,6 +324,7 @@ struct State {
     current_task: Option<AgentTask>,
     pending_approvals: HashMap<String, oneshot::Sender<ReviewDecision>>,
     pending_input: Vec<ResponseInputItem>,
+    pending_subagent_approvals: HashMap<String, oneshot::Sender<SubagentApprovalDecision>>,
     history: ConversationHistory,
     token_info: Option<TokenUsageInfo>,
     next_internal_sub_id: u64,
@@ -402,6 +406,75 @@ fn compute_subagent_tooling(
     let subagent_config = Some(config.subagents.clone());
 
     (Some(Arc::new(inventory)), registration, subagent_config)
+}
+
+const SUBAGENT_GUIDANCE_START: &str = "--- subagent-guidance ---";
+const SUBAGENT_GUIDANCE_END: &str = "--- end-subagent-guidance ---";
+
+fn merge_subagent_user_instructions(
+    existing: Option<String>,
+    inventory: Option<&SubagentInventory>,
+) -> Option<String> {
+    let Some(inventory) = inventory else {
+        return existing;
+    };
+    let Some(body) = build_subagent_guidance(inventory) else {
+        return existing;
+    };
+
+    let block = format!("{SUBAGENT_GUIDANCE_START}\n{body}\n{SUBAGENT_GUIDANCE_END}");
+
+    match existing {
+        Some(mut text) => {
+            if let Some(start) = text.find(SUBAGENT_GUIDANCE_START) {
+                let suffix_search = &text[start..];
+                if let Some(end_rel) = suffix_search.find(SUBAGENT_GUIDANCE_END) {
+                    let end = start + end_rel + SUBAGENT_GUIDANCE_END.len();
+                    text.replace_range(start..end, &block);
+                } else {
+                    text.replace_range(start.., &block);
+                }
+            } else {
+                if !text.trim_end().is_empty() {
+                    if !text.ends_with('\n') {
+                        text.push('\n');
+                    }
+                    text.push('\n');
+                }
+                text.push_str(&block);
+            }
+            Some(text)
+        }
+        None => Some(block),
+    }
+}
+
+fn build_subagent_guidance(inventory: &SubagentInventory) -> Option<String> {
+    if inventory.subagents.is_empty() {
+        return None;
+    }
+
+    let mut lines = Vec::new();
+    lines.push("Subagent delegation guidance:".to_string());
+    lines.push(
+        "- Read available subagent descriptions each turn and follow any directives they contain."
+            .to_string(),
+    );
+    lines.push("- When a description says to proactively handle the current request, name the subagent, ask the user for approval, invoke it with `invoke_subagent` (retry with `confirmed: true` after approval), and relay the subagent's report before adding your own analysis. Continue solo only if the user declines.".to_string());
+    lines.push("- Delegate only when the user's request matches the subagent's remit.".to_string());
+    lines.push("Available subagents:".to_string());
+
+    for record in inventory.subagents.values() {
+        let name = &record.definition.name;
+        let description = record.definition.description.trim();
+        if description.is_empty() {
+            lines.push(format!("  - {name}"));
+        } else {
+            lines.push(format!("  - {name}: {description}"));
+        }
+    }
+
+    Some(lines.join("\n"))
 }
 
 /// Configure the model session.
@@ -487,10 +560,15 @@ async fn handle_slash_command_turn(
     let (subagent_inventory, subagent_tool, subagent_config) =
         compute_subagent_tooling(per_turn_config.as_ref());
 
+    let user_instructions = merge_subagent_user_instructions(
+        base_context.user_instructions.clone(),
+        subagent_inventory.as_deref(),
+    );
+
     let turn_context = TurnContext {
         client,
         tools_config,
-        user_instructions: base_context.user_instructions.clone(),
+        user_instructions,
         base_instructions: base_context.base_instructions.clone(),
         approval_policy: base_context.approval_policy,
         sandbox_policy: base_context.sandbox_policy.clone(),
@@ -526,6 +604,11 @@ impl Session {
             notify,
             cwd,
         } = configure_session;
+        let (subagent_inventory, subagent_tool, subagent_config) =
+            compute_subagent_tooling(config.as_ref());
+        let user_instructions =
+            merge_subagent_user_instructions(user_instructions, subagent_inventory.as_deref());
+
         debug!("Configuring session: model={model}; provider={provider:?}");
         if !cwd.is_absolute() {
             return Err(anyhow::anyhow!("cwd is not absolute: {cwd:?}"));
@@ -636,9 +719,6 @@ impl Session {
             model_reasoning_summary,
             conversation_id,
         );
-        let (subagent_inventory, subagent_tool, subagent_config) =
-            compute_subagent_tooling(config.as_ref());
-
         let mut turn_context = TurnContext {
             client,
             tools_config: ToolsConfig::new(&ToolsConfigParams {
@@ -882,6 +962,46 @@ impl Session {
         };
         self.send_event(event).await;
         rx_approve
+    }
+
+    pub async fn request_subagent_approval(
+        &self,
+        sub_id: String,
+        payload: SubagentApprovalRequestEvent,
+    ) -> oneshot::Receiver<SubagentApprovalDecision> {
+        let (tx_decision, rx_decision) = oneshot::channel();
+        let subagent_key = payload.subagent.clone();
+        let prev_entry = {
+            let mut state = self.state.lock_unchecked();
+            state
+                .pending_subagent_approvals
+                .insert(subagent_key.clone(), tx_decision)
+        };
+        if prev_entry.is_some() {
+            warn!("Overwriting existing pending subagent approval for {subagent_key}");
+        }
+
+        let event = Event {
+            id: sub_id,
+            msg: EventMsg::SubagentApprovalRequest(payload),
+        };
+        self.send_event(event).await;
+        rx_decision
+    }
+
+    pub fn notify_subagent_approval(&self, subagent: &str, decision: SubagentApprovalDecision) {
+        let entry = {
+            let mut state = self.state.lock_unchecked();
+            state.pending_subagent_approvals.remove(subagent)
+        };
+        match entry {
+            Some(tx_decision) => {
+                let _ = tx_decision.send(decision);
+            }
+            None => {
+                warn!("No pending subagent approval found for subagent: {subagent}");
+            }
+        }
     }
 
     pub fn notify_approval(&self, sub_id: &str, decision: ReviewDecision) {
@@ -2047,10 +2167,15 @@ async fn submission_loop(
                 let (subagent_inventory, subagent_tool, subagent_config) =
                     compute_subagent_tooling(updated_config.as_ref());
 
+                let user_instructions = merge_subagent_user_instructions(
+                    prev.user_instructions.clone(),
+                    subagent_inventory.as_deref(),
+                );
+
                 let new_turn_context = TurnContext {
                     client,
                     tools_config,
-                    user_instructions: prev.user_instructions.clone(),
+                    user_instructions,
                     base_instructions: prev.base_instructions.clone(),
                     approval_policy: new_approval_policy,
                     sandbox_policy: new_sandbox_policy.clone(),
@@ -2249,6 +2374,11 @@ async fn submission_loop(
                     let (subagent_inventory, subagent_tool, subagent_config) =
                         compute_subagent_tooling(per_turn_config.as_ref());
 
+                    let user_instructions = merge_subagent_user_instructions(
+                        turn_context.user_instructions.clone(),
+                        subagent_inventory.as_deref(),
+                    );
+
                     let fresh_turn_context = TurnContext {
                         client,
                         tools_config: ToolsConfig::new(&ToolsConfigParams {
@@ -2264,7 +2394,7 @@ async fn submission_loop(
                             experimental_unified_exec_tool: config
                                 .use_experimental_unified_exec_tool,
                         }),
-                        user_instructions: turn_context.user_instructions.clone(),
+                        user_instructions,
                         base_instructions: turn_context.base_instructions.clone(),
                         approval_policy,
                         sandbox_policy,
@@ -2305,6 +2435,9 @@ async fn submission_loop(
                 }
                 other => sess.notify_approval(&id, other),
             },
+            Op::SubagentApproval { name, decision } => {
+                sess.notify_subagent_approval(&name, decision);
+            }
             Op::AddToHistory { text } => {
                 let id = sess.conversation_id;
                 let config = config.clone();
@@ -3680,7 +3813,8 @@ async fn handle_function_call(
                 };
             };
 
-            let mut session = InvocationSession::new(args.name.trim());
+            let normalized_name = SubagentDefinition::normalize_name(args.name.trim());
+            let mut session = InvocationSession::new(&normalized_name);
             session.parent_session_id = Some(sess.conversation_id.to_string());
             if !args.requested_tools.is_empty() {
                 session.requested_tools = args.requested_tools.clone();
@@ -3706,87 +3840,169 @@ async fn handle_function_call(
             }
 
             let runner = SubagentRunner::new(&subagent_config, inventory_arc.as_ref());
-            match runner.invoke(session) {
-                Ok(prepared) => {
-                    let config_arc = turn_context.client.get_config();
-                    let auth_manager = match turn_context.client.get_auth_manager() {
-                        Some(manager) => manager,
-                        None => {
-                            return ResponseInputItem::FunctionCallOutput {
-                                call_id,
-                                output: FunctionCallOutputPayload {
-                                    content: "Subagent execution requires authentication context."
-                                        .to_string(),
-                                    success: Some(false),
-                                },
-                            };
-                        }
-                    };
+            let mut current_session = session;
+            let prepared = loop {
+                match runner.invoke(current_session) {
+                    Ok(prepared) => break prepared,
+                    Err(SubagentInvocationError::ConfirmationRequired {
+                        subagent,
+                        record,
+                        session: pending_session,
+                    }) => {
+                        let description = if record.definition.description.trim().is_empty() {
+                            None
+                        } else {
+                            Some(record.definition.description.clone())
+                        };
 
-                    match execute_subagent_invocation(config_arc.as_ref(), auth_manager, prepared)
-                        .await
-                    {
-                        Ok(result_session) => {
-                            let detail_artifacts: Vec<String> = result_session
-                                .detail_artifacts
-                                .iter()
-                                .map(|p| p.to_string_lossy().to_string())
-                                .collect();
-                            let payload_json = serde_json::json!({
-                                "name": result_session.subagent_name,
-                                "summary": result_session.summary,
-                                "detail_artifacts": detail_artifacts,
-                                "requested_tools": result_session.requested_tools,
-                                "model": result_session.resolved_model,
-                                "execution_log": result_session.execution_log,
-                            });
+                        let extra_instructions = pending_session
+                            .extra_instructions
+                            .clone()
+                            .filter(|s| !s.trim().is_empty());
 
-                            ResponseInputItem::FunctionCallOutput {
-                                call_id,
-                                output: FunctionCallOutputPayload {
-                                    content: payload_json.to_string(),
-                                    success: Some(true),
-                                },
+                        let payload = SubagentApprovalRequestEvent {
+                            subagent: subagent.clone(),
+                            description,
+                            extra_instructions,
+                            allowed_tools: record.effective_tools.clone(),
+                            requested_tools: pending_session.requested_tools.clone(),
+                            model: pending_session
+                                .resolved_model
+                                .clone()
+                                .or_else(|| record.effective_model.clone()),
+                        };
+
+                        let rx = sess
+                            .request_subagent_approval(sub_id.clone(), payload)
+                            .await;
+                        let decision = rx.await.unwrap_or_default();
+                        match decision {
+                            SubagentApprovalDecision::Approved => {
+                                current_session = pending_session.confirmed();
                             }
-                        }
-                        Err(err) => {
-                            let message = err.to_string();
-                            ResponseInputItem::FunctionCallOutput {
-                                call_id,
-                                output: FunctionCallOutputPayload {
-                                    content: message,
-                                    success: Some(false),
-                                },
+                            SubagentApprovalDecision::Denied => {
+                                return ResponseInputItem::FunctionCallOutput {
+                                    call_id,
+                                    output: FunctionCallOutputPayload {
+                                        content: format!(
+                                            "Subagent '{subagent}' invocation denied by user."
+                                        ),
+                                        success: Some(false),
+                                    },
+                                };
                             }
                         }
                     }
+                    Err(SubagentInvocationError::FeatureDisabled) => {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload {
+                                content: "Subagents feature is disabled.".to_string(),
+                                success: Some(false),
+                            },
+                        };
+                    }
+                    Err(SubagentInvocationError::UnknownSubagent(name)) => {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload {
+                                content: format!("No subagent named '{name}'."),
+                                success: Some(false),
+                            },
+                        };
+                    }
+                    Err(SubagentInvocationError::InvalidSubagent(name)) => {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload {
+                                content: format!("Subagent '{name}' is invalid."),
+                                success: Some(false),
+                            },
+                        };
+                    }
+                    Err(SubagentInvocationError::DisabledSubagent(name)) => {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload {
+                                content: format!("Subagent '{name}' is disabled."),
+                                success: Some(false),
+                            },
+                        };
+                    }
+                    Err(SubagentInvocationError::ToolNotAllowed { subagent, tool }) => {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload {
+                                content: format!(
+                                    "Tool '{tool}' not allowed for subagent '{subagent}'."
+                                ),
+                                success: Some(false),
+                            },
+                        };
+                    }
+                    Err(SubagentInvocationError::ExecutionFailed(reason)) => {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload {
+                                content: reason,
+                                success: Some(false),
+                            },
+                        };
+                    }
+                    Err(SubagentInvocationError::MissingAuthManager) => {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload {
+                                content: "Subagent execution requires authentication context."
+                                    .to_string(),
+                                success: Some(false),
+                            },
+                        };
+                    }
+                }
+            };
+
+            let config_arc = turn_context.client.get_config();
+            let auth_manager = match turn_context.client.get_auth_manager() {
+                Some(manager) => manager,
+                None => {
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload {
+                            content: "Subagent execution requires authentication context."
+                                .to_string(),
+                            success: Some(false),
+                        },
+                    };
+                }
+            };
+
+            match execute_subagent_invocation(config_arc.as_ref(), auth_manager, prepared).await {
+                Ok(result_session) => {
+                    let detail_artifacts: Vec<String> = result_session
+                        .detail_artifacts
+                        .iter()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .collect();
+                    let payload_json = serde_json::json!({
+                        "name": result_session.subagent_name,
+                        "summary": result_session.summary,
+                        "detail_artifacts": detail_artifacts,
+                        "requested_tools": result_session.requested_tools,
+                        "model": result_session.resolved_model,
+                        "execution_log": result_session.execution_log,
+                    });
+
+                    ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload {
+                            content: payload_json.to_string(),
+                            success: Some(true),
+                        },
+                    }
                 }
                 Err(err) => {
-                    let message = match err {
-                        SubagentInvocationError::FeatureDisabled => {
-                            "Subagents feature is disabled.".to_string()
-                        }
-                        SubagentInvocationError::UnknownSubagent(name) => {
-                            format!("No subagent named '{name}'.")
-                        }
-                        SubagentInvocationError::InvalidSubagent(name) => {
-                            format!("Subagent '{name}' is invalid.")
-                        }
-                        SubagentInvocationError::DisabledSubagent(name) => {
-                            format!("Subagent '{name}' is disabled.")
-                        }
-                        SubagentInvocationError::ToolNotAllowed { subagent, tool } => {
-                            format!("Tool '{tool}' not allowed for subagent '{subagent}'.")
-                        }
-                        SubagentInvocationError::ConfirmationRequired(name) => {
-                            format!("Confirmation required before invoking subagent '{name}'.")
-                        }
-                        SubagentInvocationError::ExecutionFailed(reason) => reason,
-                        SubagentInvocationError::MissingAuthManager => {
-                            "Subagent execution requires authentication context.".to_string()
-                        }
-                    };
-
+                    let message = err.to_string();
                     ResponseInputItem::FunctionCallOutput {
                         call_id,
                         output: FunctionCallOutputPayload {
@@ -4924,11 +5140,15 @@ mod tests {
         });
         let (subagent_inventory, subagent_tool, subagent_config) =
             compute_subagent_tooling(config.as_ref());
+        let user_instructions = merge_subagent_user_instructions(
+            config.user_instructions.clone(),
+            subagent_inventory.as_deref(),
+        );
         let turn_context = TurnContext {
             client,
             cwd: config.cwd.clone(),
             base_instructions: config.base_instructions.clone(),
-            user_instructions: config.user_instructions.clone(),
+            user_instructions,
             approval_policy: config.approval_policy,
             sandbox_policy: config.sandbox_policy.clone(),
             shell_environment_policy: config.shell_environment_policy.clone(),

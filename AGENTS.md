@@ -20,3 +20,10 @@ Codex now supports project and user-scoped subagents. Enable the feature in `~/.
 then manage agents through the `codex agents` CLI or the interactive TUI. The transcript shows
 override precedence, summaries, and detail URIs after each run. See `docs/subagents.md` for the
 complete workflow and examples.
+
+## Dialog Box Guidelines
+- Route any approval-style prompts through `ApprovalRequest` and `UserApprovalWidget` so the TUI reuses the standard modal chrome.
+- Prefer concise, actionable option labels (e.g., `Yes`, `No`, `Refine`) and back them with keyboard shortcuts that mirror existing dialogs.
+- Surface relevant context—reason text, affected tools, models, next actions—inside the prompt body; keep it under ~6 lines to avoid pushing the modal off-screen.
+- Always send a follow-up `AppEvent::CodexOp` (or equivalent) so the core receives a structured decision, and add a short history cell summarizing the user’s choice.
+- When introducing a new dialog, add unit tests to the owning widget to confirm keyboard shortcuts and emitted events remain stable.
