@@ -1,12 +1,18 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::Parser;
+use clap::Subcommand;
+use clap::ValueEnum;
 use codex_common::CliConfigOverrides;
-use codex_core::config::{Config, ConfigOverrides};
-use codex_core::subagents::{
-    SubagentDefinition, SubagentInventory, SubagentInvocationError, SubagentScope,
-    invocation::InvocationSession,
-    record::{SubagentRecord, SubagentStatus},
-};
-use codex_core::{AuthManager, ConversationManager};
+use codex_core::AuthManager;
+use codex_core::ConversationManager;
+use codex_core::config::Config;
+use codex_core::config::ConfigOverrides;
+use codex_core::subagents::SubagentDefinition;
+use codex_core::subagents::SubagentInventory;
+use codex_core::subagents::SubagentInvocationError;
+use codex_core::subagents::SubagentScope;
+use codex_core::subagents::invocation::InvocationSession;
+use codex_core::subagents::record::SubagentRecord;
+use codex_core::subagents::record::SubagentStatus;
 use serde::Serialize;
 use std::path::PathBuf;
 use tracing::info;
@@ -160,7 +166,9 @@ async fn run_run(
                     println!("Model: {model}");
                 }
                 if !response.requested_tools.is_empty() {
-                    println!("Tools: {}", response.requested_tools.join(", "));
+                    if let Some(first_artifact) = response.detail_artifacts.first() {
+                        println!("Detail: {}", first_artifact.display());
+                    }
                 }
                 if let Some(summary) = response.summary.as_ref() {
                     println!("Summary: {summary}");
@@ -208,11 +216,7 @@ async fn run_show(
             )?;
             println!();
         } else {
-            eprintln!(
-                "{}
-",
-                err
-            );
+            eprintln!("{}", err);
         }
         return Err(err);
     };

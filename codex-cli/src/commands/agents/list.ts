@@ -47,7 +47,7 @@ function formatRecord(record: SubagentRecord): Record<string, unknown> {
     Name: record.name,
     Scope: record.scope,
     Description: record.description,
-    Tools: record.tools.join(", ") || "(all)",
+    Tools: record.tools.length > 0 ? record.tools.join(", ") : "(none)",
     Model: record.model ?? "(inherit)",
     Status: record.status,
   };

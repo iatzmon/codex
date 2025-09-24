@@ -56,7 +56,7 @@ pub struct SubagentToolEntry {
 }
 
 impl SubagentToolEntry {
-    fn from_record(record: &SubagentRecord) -> Self {
+    pub fn from_record(record: &SubagentRecord) -> Self {
         Self {
             name: record.definition.name.clone(),
             description: record.definition.description.clone(),
@@ -68,7 +68,7 @@ impl SubagentToolEntry {
         }
     }
 
-    fn summary_line(&self) -> String {
+    pub fn summary_line(&self) -> String {
         let description = if self.description.trim().is_empty() {
             "No description provided".to_string()
         } else {
@@ -151,7 +151,7 @@ impl SubagentToolRegistration {
         })
     }
 
-    fn format_tool_description(&self) -> String {
+    pub fn format_tool_description(&self) -> String {
         let mut lines = Vec::new();
         lines.push("Invoke a discovered subagent inside an isolated Codex session.".to_string());
         lines.push(

@@ -41,7 +41,7 @@ fn denies_disallowed_tool() {
 }
 
 #[test]
-fn populates_detail_artifact_when_missing() {
+fn defers_detail_artifact_population_to_executor() {
     let config = SubagentConfig::enabled(SubagentDiscoveryMode::Auto);
     let inventory = SubagentBuilder::new(config.clone())
         .with_definition(definition(SubagentScope::Project))

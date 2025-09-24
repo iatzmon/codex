@@ -1,4 +1,5 @@
-use crate::subagents::config::{SubagentConfig, SubagentDiscoveryMode};
+use crate::subagents::config::SubagentConfig;
+use crate::subagents::config::SubagentDiscoveryMode;
 use crate::subagents::inventory::SubagentInventory;
 use crate::subagents::invocation::InvocationSession;
 use crate::subagents::record::SubagentRecord;
@@ -105,14 +106,6 @@ impl<'a> SubagentRunner<'a> {
                 .effective_model
                 .clone()
                 .or_else(|| self.config.default_model.clone());
-        }
-
-        if session.summary.is_none() {
-            session.summary = None;
-        }
-
-        if session.detail_artifacts.is_empty() {
-            session.detail_artifacts.clear();
         }
 
         Ok(PreparedSubagentInvocation { session, record })

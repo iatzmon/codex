@@ -1,11 +1,14 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
 use walkdir::WalkDir;
 
-use crate::subagents::definition::{SubagentDefinition, SubagentScope};
+use crate::subagents::definition::SubagentDefinition;
+use crate::subagents::definition::SubagentScope;
 use crate::subagents::inventory::DiscoveryEvent;
-use crate::subagents::parser::{SubagentParserError, parse_definition};
+use crate::subagents::parser::SubagentParserError;
+use crate::subagents::parser::parse_definition;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DiscoverySource {
@@ -48,11 +51,19 @@ pub fn discover_from_source(source: DiscoverySource) -> DiscoveryOutcome {
     let mut outcome = DiscoveryOutcome::default();
 
     if !root.exists() {
-        return outcome;
-    }
-
     for entry in WalkDir::new(&root)
         .follow_links(false)
+        .into_iter()
+    {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(err) => {
+                outcome.events.push(DiscoveryEvent {
+                    message: format!("Failed to traverse directory: {}", err),
+                });
+                continue;
+            }
+        };
         .into_iter()
         .filter_map(Result::ok)
     {
@@ -102,7 +113,7 @@ pub fn detect_scope(path: &PathBuf) -> SubagentScope {
     SubagentScope::Project
 }
 
-fn is_markdown(path: &Path) -> bool {
+pub fn is_markdown(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| {

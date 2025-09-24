@@ -257,13 +257,13 @@ async function runCodexAgentsCommand(
     let timeoutTimer: NodeJS.Timeout | undefined;
     if (typeof timeoutMs === "number") {
       timeoutTimer = setTimeout(() => {
-            const { stdout, stderr } = collectOutput();
-            child.kill("SIGTERM");
-            killTimer = setTimeout(() => {
-              if (!completed) {
-                child.kill("SIGKILL");
-              }
-            }, KILL_GRACE_PERIOD_MS);
+        const { stdout, stderr } = collectOutput();
+        child.kill("SIGTERM");
+        killTimer = setTimeout(() => {
+          if (!completed) {
+            child.kill("SIGKILL");
+          }
+        }, KILL_GRACE_PERIOD_MS);
 
             const message: string[] = [
               `codex agents command timed out after ${timeoutMs}ms`,
@@ -323,6 +323,7 @@ function resolveCodexBinary(): string {
     return envBin;
   }
 
+  const platform = os.platform();
   const cliRoot = path.resolve(fileDirectory(), "..", "..");
   const workspaceRoot = path.resolve(cliRoot, "..");
 
@@ -350,7 +351,8 @@ function resolveCodexBinary(): string {
 
   const triple = detectTargetTriple();
   if (triple) {
-    const packaged = path.resolve(cliRoot, "bin", `codex-${triple}`);
+    const packagedBase = path.resolve(cliRoot, "bin", `codex-${triple}`);
+    const packaged = platform === "win32" ? `${packagedBase}.exe` : packagedBase;
     if (existsSync(packaged)) {
       return packaged;
     }
@@ -410,10 +412,10 @@ function detectTargetTriple(): string | null {
 
   if (platform === "win32") {
     if (arch === "x64") {
-      return "x86_64-pc-windows-msvc.exe";
+      return "x86_64-pc-windows-msvc";
     }
     if (arch === "arm64") {
-      return "aarch64-pc-windows-msvc.exe";
+      return "aarch64-pc-windows-msvc";
     }
     return null;
   }

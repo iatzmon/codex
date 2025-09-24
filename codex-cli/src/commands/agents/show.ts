@@ -24,7 +24,7 @@ function renderAgent(record: SubagentRecord): void {
   console.log(`Name: ${record.name}`);
   console.log(`Scope: ${record.scope}`);
   console.log(`Description: ${record.description}`);
-  console.log(`Tools: ${record.tools.join(", ") || "(all)"}`);
+  console.log(`Tools: ${record.tools.length > 0 ? record.tools.join(", ") : "(all)"}`);
   console.log(`Model: ${record.model ?? "(inherit)"}`);
   console.log(`Status: ${record.status}`);
   console.log(`Source: ${record.sourcePath}`);
