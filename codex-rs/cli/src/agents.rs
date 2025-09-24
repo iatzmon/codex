@@ -8,6 +8,7 @@ use codex_core::subagents::{
 };
 use codex_core::{AuthManager, ConversationManager};
 use serde::Serialize;
+use std::path::PathBuf;
 use tracing::info;
 
 /// Entry point for the `codex agents` command family.
@@ -86,9 +87,9 @@ struct AgentsShowCommand {
     json: bool,
 }
 
-pub async fn run_agents_cli(cli: AgentsCli) -> anyhow::Result<()> {
+pub async fn run_agents_cli(cli: AgentsCli, cwd_override: Option<PathBuf>) -> anyhow::Result<()> {
     let overrides = cli.config_overrides.clone();
-    let config = load_config(&overrides)?;
+    let config = load_config(&overrides, cwd_override)?;
     let manager = ConversationManager::new(AuthManager::shared(config.codex_home.clone()));
 
     match cli.command {
@@ -100,11 +101,17 @@ pub async fn run_agents_cli(cli: AgentsCli) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn load_config(overrides: &CliConfigOverrides) -> anyhow::Result<Config> {
+fn load_config(
+    overrides: &CliConfigOverrides,
+    cwd_override: Option<PathBuf>,
+) -> anyhow::Result<Config> {
     let pairs = overrides.parse_overrides().map_err(anyhow::Error::msg)?;
     Ok(Config::load_with_cli_overrides(
         pairs,
-        ConfigOverrides::default(),
+        ConfigOverrides {
+            cwd: cwd_override,
+            ..Default::default()
+        },
     )?)
 }
 

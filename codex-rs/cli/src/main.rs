@@ -289,11 +289,12 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
             hooks::run_hooks_cli(hooks_cli, root_config_overrides)?;
         }
         Some(Subcommand::Agents(mut agents_cli)) => {
+            let cwd_override = interactive.cwd.clone();
             prepend_config_flags(
                 &mut agents_cli.config_overrides,
                 root_config_overrides.clone(),
             );
-            agents::run_agents_cli(agents_cli).await?;
+            agents::run_agents_cli(agents_cli, cwd_override).await?;
         }
     }
 
