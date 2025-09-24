@@ -967,20 +967,20 @@ impl Session {
     pub async fn request_subagent_approval(
         &self,
         sub_id: String,
-        payload: SubagentApprovalRequestEvent,
+        mut payload: SubagentApprovalRequestEvent,
     ) -> oneshot::Receiver<SubagentApprovalDecision> {
         let (tx_decision, rx_decision) = oneshot::channel();
-        let subagent_key = payload.subagent.clone();
         let prev_entry = {
             let mut state = self.state.lock_unchecked();
             state
                 .pending_subagent_approvals
-                .insert(subagent_key.clone(), tx_decision)
+                .insert(sub_id.clone(), tx_decision)
         };
         if prev_entry.is_some() {
-            warn!("Overwriting existing pending subagent approval for {subagent_key}");
+            warn!("Overwriting existing pending subagent approval for id {sub_id}");
         }
 
+        payload.id = sub_id.clone();
         let event = Event {
             id: sub_id,
             msg: EventMsg::SubagentApprovalRequest(payload),
@@ -989,18 +989,28 @@ impl Session {
         rx_decision
     }
 
-    pub fn notify_subagent_approval(&self, subagent: &str, decision: SubagentApprovalDecision) {
+    pub fn notify_subagent_approval(&self, id: &str, decision: SubagentApprovalDecision) {
         let entry = {
             let mut state = self.state.lock_unchecked();
-            state.pending_subagent_approvals.remove(subagent)
+            state.pending_subagent_approvals.remove(id)
         };
         match entry {
             Some(tx_decision) => {
                 let _ = tx_decision.send(decision);
             }
             None => {
-                warn!("No pending subagent approval found for subagent: {subagent}");
+                warn!("No pending subagent approval found for id: {id}");
             }
+        }
+    }
+
+    pub fn clear_pending_subagent_approval(&self, id: &str) {
+        let entry = {
+            let mut state = self.state.lock_unchecked();
+            state.pending_subagent_approvals.remove(id)
+        };
+        if entry.is_some() {
+            trace!("Cleared pending subagent approval for id: {id}");
         }
     }
 
@@ -2435,8 +2445,9 @@ async fn submission_loop(
                 }
                 other => sess.notify_approval(&id, other),
             },
-            Op::SubagentApproval { name, decision } => {
-                sess.notify_subagent_approval(&name, decision);
+            Op::SubagentApproval { id, name, decision } => {
+                trace!(subagent = %name, request_id = %id, decision = ?decision, "subagent approval received");
+                sess.notify_subagent_approval(&id, decision);
             }
             Op::AddToHistory { text } => {
                 let id = sess.conversation_id;
@@ -3861,6 +3872,7 @@ async fn handle_function_call(
                             .filter(|s| !s.trim().is_empty());
 
                         let payload = SubagentApprovalRequestEvent {
+                            id: sub_id.clone(),
                             subagent: subagent.clone(),
                             description,
                             extra_instructions,
@@ -3876,6 +3888,7 @@ async fn handle_function_call(
                             .request_subagent_approval(sub_id.clone(), payload)
                             .await;
                         let decision = rx.await.unwrap_or_default();
+                        sess.clear_pending_subagent_approval(&sub_id);
                         match decision {
                             SubagentApprovalDecision::Approved => {
                                 current_session = pending_session.confirmed();

@@ -459,6 +459,7 @@ impl ChatWidget {
     fn on_subagent_approval_request(&mut self, event: SubagentApprovalRequestEvent) {
         self.bottom_pane
             .push_approval_request(ApprovalRequest::Subagent {
+                id: event.id.clone(),
                 name: event.subagent,
                 description: event.description,
                 extra_instructions: event.extra_instructions,

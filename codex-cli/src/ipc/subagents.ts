@@ -77,8 +77,28 @@ export async function fetchSubagentList(
     timeoutMs: options.timeoutMs,
   });
   ensureSuccess(result, "codex agents list");
-  const payload = result.stdout.trim() || "{}";
-  return normalizeListPayload(JSON.parse(payload) as RawListPayload);
+  const payloadText = result.stdout.trim();
+  let rawPayload: RawListPayload;
+  try {
+    rawPayload = payloadText
+      ? (JSON.parse(payloadText) as RawListPayload)
+      : ({} as RawListPayload);
+  } catch (err) {
+    const stderrText = result.stderr.trim();
+    const errorLines = ["codex agents list returned invalid JSON output."];
+    if (stderrText.length > 0) {
+      errorLines.push(`stderr:\n${stderrText}`);
+    }
+    errorLines.push(`stdout:\n${payloadText || "(empty)"}`);
+    errorLines.push(`parse error: ${(err as Error).message}`);
+    const error = new Error(errorLines.join("\n\n"));
+    (error as { cause?: unknown }).cause = err;
+    (error as { stdout?: string }).stdout = result.stdout;
+    (error as { stderr?: string }).stderr = result.stderr;
+    (error as { exitCode?: number }).exitCode = result.code;
+    throw error;
+  }
+  return normalizeListPayload(rawPayload);
 }
 
 export interface RunOptions {
@@ -103,11 +123,36 @@ export async function invokeSubagent(
 export async function fetchSubagentRecord(name: string): Promise<SubagentRecord> {
   const args = ["agents", "show", name, "--json"];
   const result = await runCodexAgentsCommand(args);
-  if (result.code !== 0) {
-    throw buildCommandError("codex agents show", result);
+  ensureSuccess(result, "codex agents show");
+
+  const payloadText = result.stdout.trim();
+  if (!payloadText) {
+    const error = new Error("codex agents show returned empty output");
+    (error as { stdout?: string }).stdout = result.stdout;
+    (error as { stderr?: string }).stderr = result.stderr;
+    throw error;
   }
-  const payload = result.stdout.trim() || "{}";
-  return normalizeRecord(JSON.parse(payload) as RawRecordPayload);
+
+  try {
+    const raw = JSON.parse(payloadText) as RawRecordPayload;
+    return normalizeRecord(raw);
+  } catch (err) {
+    const stderrText = result.stderr.trim();
+    const errorLines = [
+      "codex agents show returned invalid JSON output.",
+      `stdout:\n${payloadText}`,
+    ];
+    if (stderrText.length > 0) {
+      errorLines.push(`stderr:\n${stderrText}`);
+    }
+    errorLines.push(`parse error: ${(err as Error).message}`);
+    const error = new Error(errorLines.join("\n\n"));
+    (error as { cause?: unknown }).cause = err;
+    (error as { stdout?: string }).stdout = result.stdout;
+    (error as { stderr?: string }).stderr = result.stderr;
+    (error as { exitCode?: number }).exitCode = result.code;
+    throw error;
+  }
 }
 
 function ensureSuccess(result: CommandResult, command: string): void {
@@ -439,9 +484,11 @@ function normalizeScope(value?: string): Scope {
 }
 
 function parseRunResult(result: CommandResult, name: string): SubagentRunPayload {
-  const payloadText = result.stdout.trim();
+  const stdoutText = result.stdout.trim();
+  const stderrText = result.stderr.trim();
+
   if (result.code === 0) {
-    if (!payloadText) {
+    if (!stdoutText) {
       return {
         name,
         summary: null,
@@ -450,17 +497,71 @@ function parseRunResult(result: CommandResult, name: string): SubagentRunPayload
         detailArtifacts: [],
       };
     }
-    const raw = JSON.parse(payloadText) as RawRunPayload;
-    return normalizeRunPayload(raw);
+
+    let raw: RawRunPayload;
+    try {
+      raw = JSON.parse(stdoutText) as RawRunPayload;
+    } catch (err) {
+      const errorLines = [
+        "codex agents run returned invalid JSON output.",
+        `stdout:\n${stdoutText}`,
+      ];
+      if (stderrText.length > 0) {
+        errorLines.push(`stderr:\n${stderrText}`);
+      }
+      errorLines.push(`parse error: ${(err as Error).message}`);
+      const error = new Error(errorLines.join("\n\n"));
+      (error as { cause?: unknown }).cause = err;
+      (error as { stdout?: string }).stdout = result.stdout;
+      (error as { stderr?: string }).stderr = result.stderr;
+      (error as { exitCode?: number }).exitCode = result.code;
+      throw error;
+    }
+
+    const normalized = normalizeRunPayload(raw);
+    if (!normalized.name) {
+      normalized.name = name;
+    }
+    return normalized;
   }
 
-  if (payloadText.length > 0) {
-    const raw = JSON.parse(payloadText) as RawRunPayload;
-    const message = raw.error ?? payloadText;
-    throw new Error(message);
+  if (stdoutText) {
+    try {
+      const raw = JSON.parse(stdoutText) as RawRunPayload;
+      const message = raw.error ?? stderrText || stdoutText;
+      const error = new Error(
+        `codex agents run exited with code ${result.code}: ${message}`,
+      );
+      (error as { stdout?: string }).stdout = result.stdout;
+      (error as { stderr?: string }).stderr = result.stderr;
+      (error as { exitCode?: number }).exitCode = result.code;
+      throw error;
+    } catch (err) {
+      const errorLines = [
+        `codex agents run exited with code ${result.code} and produced invalid JSON output.`,
+        `stdout:\n${stdoutText}`,
+      ];
+      if (stderrText.length > 0) {
+        errorLines.push(`stderr:\n${stderrText}`);
+      }
+      errorLines.push(`parse error: ${(err as Error).message}`);
+      const error = new Error(errorLines.join("\n\n"));
+      (error as { cause?: unknown }).cause = err;
+      (error as { stdout?: string }).stdout = result.stdout;
+      (error as { stderr?: string }).stderr = result.stderr;
+      (error as { exitCode?: number }).exitCode = result.code;
+      throw error;
+    }
   }
 
-  throw buildCommandError("codex agents run", result);
+  const message = stderrText || "(no output)";
+  const error = new Error(
+    `codex agents run exited with code ${result.code}: ${message}`,
+  );
+  (error as { stdout?: string }).stdout = result.stdout;
+  (error as { stderr?: string }).stderr = result.stderr;
+  (error as { exitCode?: number }).exitCode = result.code;
+  throw error;
 }
 
 function normalizeRunPayload(raw: RawRunPayload): SubagentRunPayload {

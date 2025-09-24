@@ -51,6 +51,7 @@ pub(crate) enum ApprovalRequest {
         session: PlanModeSessionPayload,
     },
     Subagent {
+        id: String,
         name: String,
         description: Option<String>,
         extra_instructions: Option<String>,
@@ -243,6 +244,7 @@ impl UserApprovalWidget {
                 Paragraph::new(contents).wrap(Wrap { trim: false })
             }
             ApprovalRequest::Subagent {
+                id: _,
                 name,
                 description,
                 extra_instructions,
@@ -392,7 +394,7 @@ impl UserApprovalWidget {
     }
 
     fn send_subagent_decision(&mut self, decision: SubagentApprovalDecision) {
-        if let ApprovalRequest::Subagent { name, .. } = &self.approval_request {
+        if let ApprovalRequest::Subagent { id, name, .. } = &self.approval_request {
             let subagent_name = name.clone();
 
             let spans: Vec<Span<'static>> = match decision {
@@ -418,6 +420,7 @@ impl UserApprovalWidget {
 
             self.app_event_tx
                 .send(AppEvent::CodexOp(Op::SubagentApproval {
+                    id: id.clone(),
                     name: subagent_name,
                     decision,
                 }));
@@ -733,6 +736,7 @@ mod tests {
         let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
         let request = ApprovalRequest::Subagent {
+            id: "sub-1".into(),
             name: "code-reviewer".into(),
             description: Some("Reviews recent changes".into()),
             extra_instructions: None,
@@ -746,7 +750,8 @@ mod tests {
 
         let mut saw_approval = false;
         while let Ok(event) = rx.try_recv() {
-            if let AppEvent::CodexOp(Op::SubagentApproval { name, decision }) = event {
+            if let AppEvent::CodexOp(Op::SubagentApproval { id, name, decision }) = event {
+                assert_eq!(id, "sub-1");
                 assert_eq!(name, "code-reviewer");
                 assert_eq!(decision, SubagentApprovalDecision::Approved);
                 saw_approval = true;
@@ -761,6 +766,7 @@ mod tests {
         let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
         let request = ApprovalRequest::Subagent {
+            id: "sub-2".into(),
             name: "code-reviewer".into(),
             description: None,
             extra_instructions: Some("Focus on tests".into()),
@@ -774,7 +780,8 @@ mod tests {
 
         let mut saw_denied = false;
         while let Ok(event) = rx.try_recv() {
-            if let AppEvent::CodexOp(Op::SubagentApproval { name, decision }) = event {
+            if let AppEvent::CodexOp(Op::SubagentApproval { id, name, decision }) = event {
+                assert_eq!(id, "sub-2");
                 assert_eq!(name, "code-reviewer");
                 assert_eq!(decision, SubagentApprovalDecision::Denied);
                 saw_denied = true;

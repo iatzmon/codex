@@ -153,6 +153,8 @@ pub enum Op {
 
     /// Approve or deny execution of a subagent.
     SubagentApproval {
+        /// Identifier for the pending approval request.
+        id: String,
         /// Normalized name of the subagent being approved.
         name: String,
         /// The user's decision for the requested invocation.
@@ -1196,6 +1198,8 @@ pub struct ApplyPatchApprovalRequestEvent {
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 pub struct SubagentApprovalRequestEvent {
+    /// Identifier for correlating subsequent approval responses.
+    pub id: String,
     /// Normalized subagent identifier.
     pub subagent: String,
     /// Human-readable description sourced from definition metadata.

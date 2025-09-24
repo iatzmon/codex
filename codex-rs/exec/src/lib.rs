@@ -325,6 +325,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
 fn auto_deny_subagent_request(event: &Event) -> Option<Op> {
     if let EventMsg::SubagentApprovalRequest(request) = &event.msg {
         Some(Op::SubagentApproval {
+            id: event.id.clone(),
             name: request.subagent.clone(),
             decision: SubagentApprovalDecision::Denied,
         })
@@ -363,6 +364,7 @@ mod tests {
         let event = Event {
             id: "1".into(),
             msg: EventMsg::SubagentApprovalRequest(SubagentApprovalRequestEvent {
+                id: "1".into(),
                 subagent: "code-reviewer".into(),
                 description: Some("Reviews staged diffs".into()),
                 extra_instructions: None,
@@ -373,7 +375,8 @@ mod tests {
         };
 
         match auto_deny_subagent_request(&event) {
-            Some(Op::SubagentApproval { name, decision }) => {
+            Some(Op::SubagentApproval { id, name, decision }) => {
+                assert_eq!(id, "1");
                 assert_eq!(name, "code-reviewer");
                 assert_eq!(decision, SubagentApprovalDecision::Denied);
             }
