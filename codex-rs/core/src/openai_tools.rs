@@ -9,6 +9,12 @@ use crate::model_family::ModelFamily;
 use crate::plan_tool::PLAN_TOOL;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
+use crate::subagents::SubagentConfig;
+use crate::subagents::SubagentDiscoveryMode;
+use crate::subagents::SubagentInventory;
+use crate::subagents::SubagentRecord;
+use crate::subagents::SubagentScope;
+use crate::subagents::SubagentStatus;
 use crate::tool_apply_patch::ApplyPatchToolType;
 use crate::tool_apply_patch::create_apply_patch_freeform_tool;
 use crate::tool_apply_patch::create_apply_patch_json_tool;
@@ -36,6 +42,220 @@ pub struct FreeformToolFormat {
     pub(crate) r#type: String,
     pub(crate) syntax: String,
     pub(crate) definition: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubagentToolEntry {
+    name: String,
+    description: String,
+    scope: SubagentScope,
+    tools: Vec<String>,
+    model: Option<String>,
+    status: SubagentStatus,
+    validation_errors: Vec<String>,
+}
+
+impl SubagentToolEntry {
+    pub fn from_record(record: &SubagentRecord) -> Self {
+        Self {
+            name: record.definition.name.clone(),
+            description: record.definition.description.clone(),
+            scope: record.definition.scope,
+            tools: record.effective_tools.clone(),
+            model: record.effective_model.clone(),
+            status: record.status.clone(),
+            validation_errors: record.validation_errors.clone(),
+        }
+    }
+
+    pub fn summary_line(&self) -> String {
+        let description = if self.description.trim().is_empty() {
+            "No description provided".to_string()
+        } else {
+            truncate(&self.description, 96)
+        };
+
+        let mut parts = vec![format!(
+            "{} ({}) — {}",
+            self.name,
+            describe_scope(self.scope),
+            description
+        )];
+
+        if !self.tools.is_empty() {
+            parts.push(format!("tools: {}", self.tools.join(", ")));
+        }
+
+        if let Some(model) = &self.model {
+            parts.push(format!("model: {model}"));
+        }
+
+        if !matches!(self.status, SubagentStatus::Active) {
+            parts.push(format!("status: {}", describe_status(&self.status)));
+        }
+
+        if !self.validation_errors.is_empty() {
+            parts.push(format!("errors: {}", self.validation_errors.join("; ")));
+        }
+
+        parts.join(" | ")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SubagentToolRegistration {
+    discovery_mode: SubagentDiscoveryMode,
+    default_model: Option<String>,
+    entries: Vec<SubagentToolEntry>,
+    invalid_entries: Vec<SubagentToolEntry>,
+    conflicts: Vec<String>,
+}
+
+impl SubagentToolRegistration {
+    pub fn from_inventory(config: &SubagentConfig, inventory: &SubagentInventory) -> Option<Self> {
+        if !config.is_enabled() {
+            return None;
+        }
+
+        let entries = inventory
+            .subagents
+            .values()
+            .map(SubagentToolEntry::from_record)
+            .collect::<Vec<_>>();
+
+        let invalid_entries = inventory
+            .invalid()
+            .into_iter()
+            .map(SubagentToolEntry::from_record)
+            .collect::<Vec<_>>();
+
+        let conflicts = inventory
+            .conflicts
+            .iter()
+            .map(|conflict| {
+                format!(
+                    "{} ← {} ({})",
+                    conflict.name,
+                    describe_scope(conflict.losing_scope),
+                    conflict.reason
+                )
+            })
+            .collect::<Vec<_>>();
+
+        Some(Self {
+            discovery_mode: config.discovery,
+            default_model: config.default_model.clone(),
+            entries,
+            invalid_entries,
+            conflicts,
+        })
+    }
+
+    pub fn format_tool_description(&self) -> String {
+        let mut lines = Vec::new();
+        lines.push("Invoke a discovered subagent inside an isolated Codex session.".to_string());
+        lines.push(
+            "Provide \"name\" (normalized kebab-case) and optional \"instructions\" to describe the subtask.".to_string(),
+        );
+        match self.discovery_mode {
+            SubagentDiscoveryMode::Auto => lines.push(
+                "Auto discovery is enabled; invocation confirmations are enforced by the runner."
+                    .to_string(),
+            ),
+            SubagentDiscoveryMode::Manual => lines.push(
+                "Discovery mode is manual; only explicit tool calls will invoke subagents."
+                    .to_string(),
+            ),
+        }
+        if let Some(model) = &self.default_model {
+            lines.push(format!("Config default model fallback: {model}"));
+        }
+
+        if self.entries.is_empty() {
+            lines.push("No active subagents are currently available.".to_string());
+        } else {
+            lines.push("Available subagents:".to_string());
+            append_entry_lines(&mut lines, &self.entries, 8);
+        }
+
+        if !self.invalid_entries.is_empty() {
+            lines.push("Invalid definitions (will fail until fixed):".to_string());
+            append_entry_lines(&mut lines, &self.invalid_entries, 4);
+        }
+
+        if !self.conflicts.is_empty() {
+            let mut conflict_lines = self.conflicts.iter();
+            lines.push("Conflicts:".to_string());
+            for conflict in conflict_lines.by_ref().take(4) {
+                lines.push(format!(" - {conflict}"));
+            }
+            let remaining = self.conflicts.len().saturating_sub(4);
+            if remaining > 0 {
+                lines.push(format!(" - … {remaining} more"));
+            }
+        }
+
+        lines.join("\n")
+    }
+
+    fn format_name_description(&self) -> String {
+        if self.entries.is_empty() {
+            "Normalized subagent name to invoke; no active subagents discovered.".to_string()
+        } else {
+            let sample: Vec<String> = self
+                .entries
+                .iter()
+                .map(|entry| entry.name.clone())
+                .take(6)
+                .collect();
+            let mut desc = format!("Normalized subagent name (examples: {}", sample.join(", "));
+            if self.entries.len() > sample.len() {
+                desc.push_str(", …");
+            }
+            desc.push(')');
+            desc
+        }
+    }
+}
+
+fn append_entry_lines(lines: &mut Vec<String>, entries: &[SubagentToolEntry], limit: usize) {
+    for entry in entries.iter().take(limit) {
+        lines.push(format!(" - {}", entry.summary_line()));
+    }
+    let remaining = entries.len().saturating_sub(limit);
+    if remaining > 0 {
+        lines.push(format!(" - … {remaining} more"));
+    }
+}
+
+fn describe_scope(scope: SubagentScope) -> &'static str {
+    match scope {
+        SubagentScope::Project => "project",
+        SubagentScope::User => "user",
+    }
+}
+
+fn describe_status(status: &SubagentStatus) -> &'static str {
+    match status {
+        SubagentStatus::Active => "active",
+        SubagentStatus::Invalid => "invalid",
+        SubagentStatus::Disabled => "disabled",
+    }
+}
+
+fn truncate(input: &str, max: usize) -> String {
+    if input.chars().count() <= max {
+        return input.to_string();
+    }
+    let mut out = String::new();
+    for ch in input.chars() {
+        if out.chars().count() + 1 > max.saturating_sub(1) {
+            break;
+        }
+        out.push(ch);
+    }
+    out.push('…');
+    out
 }
 
 /// When serialized as JSON, this produces a valid "Tool" in the OpenAI
@@ -323,6 +543,61 @@ fn create_view_image_tool() -> OpenAiTool {
         },
     })
 }
+
+fn create_invoke_subagent_tool(registration: &SubagentToolRegistration) -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "name".to_string(),
+        JsonSchema::String {
+            description: Some(registration.format_name_description()),
+        },
+    );
+    properties.insert(
+        "instructions".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Optional instructions for the subagent to execute inside its isolated session."
+                    .to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "requested_tools".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::String {
+                description: Some("Tool identifier to request for the invocation.".to_string()),
+            }),
+            description: Some(
+                "Optional subset of allowed tools to request on the subagent's behalf.".to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "model".to_string(),
+        JsonSchema::String {
+            description: Some("Optional model override for this subagent run.".to_string()),
+        },
+    );
+    properties.insert(
+        "confirmed".to_string(),
+        JsonSchema::Boolean {
+            description: Some(
+                "Set to true after the user explicitly approves invoking the subagent when auto discovery is enabled.".to_string(),
+            ),
+        },
+    );
+
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "invoke_subagent".to_string(),
+        description: registration.format_tool_description(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["name".to_string()]),
+            additional_properties: Some(false),
+        },
+    })
+}
 /// TODO(dylan): deprecate once we get rid of json tool
 #[derive(Serialize, Deserialize)]
 pub(crate) struct ApplyPatchToolArgs {
@@ -530,6 +805,7 @@ fn sanitize_json_schema(value: &mut JsonValue) {
 pub(crate) fn get_openai_tools(
     config: &ToolsConfig,
     mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
+    subagent_tool: Option<&SubagentToolRegistration>,
 ) -> Vec<OpenAiTool> {
     let mut tools: Vec<OpenAiTool> = Vec::new();
 
@@ -580,6 +856,10 @@ pub(crate) fn get_openai_tools(
     if config.include_view_image_tool {
         tools.push(create_view_image_tool());
     }
+
+    if let Some(registration) = subagent_tool {
+        tools.push(create_invoke_subagent_tool(registration));
+    }
     if let Some(mcp_tools) = mcp_tools {
         // Ensure deterministic ordering to maximize prompt cache hits.
         let mut entries: Vec<(String, mcp_types::Tool)> = mcp_tools.into_iter().collect();
@@ -601,8 +881,15 @@ pub(crate) fn get_openai_tools(
 #[cfg(test)]
 mod tests {
     use crate::model_family::find_family_for_model;
+    use crate::subagents::SubagentConfig;
+    use crate::subagents::SubagentDefinition;
+    use crate::subagents::SubagentDiscoveryMode;
+    use crate::subagents::SubagentInventory;
+    use crate::subagents::SubagentRecord;
+    use crate::subagents::SubagentScope;
     use mcp_types::ToolInputSchema;
     use pretty_assertions::assert_eq;
+    use std::path::PathBuf;
 
     use super::*;
 
@@ -645,7 +932,7 @@ mod tests {
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
         });
-        let tools = get_openai_tools(&config, Some(HashMap::new()));
+        let tools = get_openai_tools(&config, Some(HashMap::new()), None);
 
         assert_eq_tool_names(
             &tools,
@@ -667,7 +954,7 @@ mod tests {
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
         });
-        let tools = get_openai_tools(&config, Some(HashMap::new()));
+        let tools = get_openai_tools(&config, Some(HashMap::new()), None);
 
         assert_eq_tool_names(
             &tools,
@@ -725,6 +1012,7 @@ mod tests {
                     description: Some("Do something cool".to_string()),
                 },
             )])),
+            None,
         );
 
         assert_eq_tool_names(
@@ -845,7 +1133,7 @@ mod tests {
             ),
         ]);
 
-        let tools = get_openai_tools(&config, Some(tools_map));
+        let tools = get_openai_tools(&config, Some(tools_map), None);
         // Expect unified_exec first, followed by MCP tools sorted by fully-qualified name.
         assert_eq_tool_names(
             &tools,
@@ -895,6 +1183,7 @@ mod tests {
                     description: Some("Search docs".to_string()),
                 },
             )])),
+            None,
         );
 
         assert_eq_tool_names(
@@ -956,6 +1245,7 @@ mod tests {
                     description: Some("Pagination".to_string()),
                 },
             )])),
+            None,
         );
 
         assert_eq_tool_names(
@@ -1014,6 +1304,7 @@ mod tests {
                     description: Some("Tags".to_string()),
                 },
             )])),
+            None,
         );
 
         assert_eq_tool_names(
@@ -1075,6 +1366,7 @@ mod tests {
                     description: Some("AnyOf Value".to_string()),
                 },
             )])),
+            None,
         );
 
         assert_eq_tool_names(
@@ -1097,6 +1389,93 @@ mod tests {
                 strict: false,
             })
         );
+    }
+
+    #[test]
+    fn test_invoke_subagent_tool_included_when_registration_present() {
+        let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::ReadOnly,
+            include_plan_tool: false,
+            include_apply_patch_tool: false,
+            include_web_search_request: false,
+            use_streamable_shell_tool: false,
+            include_view_image_tool: false,
+            experimental_unified_exec_tool: false,
+        });
+
+        let mut inventory = SubagentInventory::default();
+        let definition = SubagentDefinition::new(
+            "code-reviewer",
+            "Reviews staged diffs for safety regressions",
+            SubagentScope::Project,
+            PathBuf::from("/tmp/code-reviewer.md"),
+        )
+        .with_tools(vec!["git_diff".to_string()])
+        .with_model(Some("gpt-4.1-mini".to_string()));
+
+        let subagent_config = SubagentConfig::enabled(SubagentDiscoveryMode::Auto)
+            .with_default_model(Some("gpt-4o-mini".to_string()));
+        let record = SubagentRecord::from_definition(definition, &subagent_config);
+        inventory
+            .subagents
+            .insert(record.definition.name.clone(), record);
+
+        let registration = SubagentToolRegistration::from_inventory(&subagent_config, &inventory)
+            .expect("registration");
+
+        let tools = get_openai_tools(&tools_config, Some(HashMap::new()), Some(&registration));
+        let tool_names: Vec<&str> = tools
+            .iter()
+            .map(|tool| match tool {
+                OpenAiTool::Function(ResponsesApiTool { name, .. }) => name.as_str(),
+                OpenAiTool::LocalShell {} => "local_shell",
+                OpenAiTool::WebSearch {} => "web_search",
+                OpenAiTool::Freeform(FreeformTool { name, .. }) => name.as_str(),
+            })
+            .collect();
+
+        assert!(tool_names.contains(&"invoke_subagent"));
+
+        let invoke_tool = tools
+            .into_iter()
+            .find_map(|tool| match tool {
+                OpenAiTool::Function(payload) if payload.name == "invoke_subagent" => Some(payload),
+                _ => None,
+            })
+            .expect("invoke_subagent tool present");
+
+        assert!(
+            invoke_tool.description.contains("code-reviewer"),
+            "tool description should list subagent metadata"
+        );
+
+        if let JsonSchema::Object { properties, .. } = invoke_tool.parameters {
+            assert!(properties.contains_key("name"));
+            assert!(properties.contains_key("instructions"));
+            assert!(properties.contains_key("requested_tools"));
+            assert!(properties.contains_key("model"));
+
+            let requested_tools_schema = properties
+                .get("requested_tools")
+                .expect("requested_tools schema");
+            match requested_tools_schema {
+                JsonSchema::Array { items, .. } => match items.as_ref() {
+                    JsonSchema::String { .. } => {}
+                    other => panic!("requested_tools items should be string schema, got {other:?}"),
+                },
+                other => panic!("requested_tools should be an array schema, got {other:?}"),
+            }
+
+            match properties.get("model").expect("model schema") {
+                JsonSchema::String { .. } => {}
+                other => panic!("model should be string schema, got {other:?}"),
+            }
+        } else {
+            panic!("invoke_subagent should expose object parameters");
+        }
     }
 
     #[test]

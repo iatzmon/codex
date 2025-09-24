@@ -54,7 +54,9 @@ pub(crate) async fn spawn_child_async(
     cmd.args(args);
     cmd.current_dir(cwd);
     cmd.env_clear();
-    cmd.envs(env);
+    for (key, value) in &env {
+        cmd.env(key, value);
+    }
 
     if !sandbox_policy.has_full_network_access() {
         cmd.env(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR, "1");

@@ -1,0 +1,22 @@
+pub mod builder;
+pub mod config;
+pub mod definition;
+pub mod discovery;
+pub mod executor;
+pub mod inventory;
+pub mod invocation;
+pub mod parser;
+pub mod record;
+pub mod runner;
+pub mod service;
+
+pub use builder::SubagentBuilder;
+pub use config::{SubagentConfig, SubagentDiscoveryMode};
+pub use definition::{SubagentDefinition, SubagentScope, SubagentValidationError};
+pub use discovery::{DiscoveryOutcome, DiscoverySource, SubagentSourceTree};
+pub use executor::execute_subagent_invocation;
+pub use inventory::{DiscoveryEvent, SubagentConflict, SubagentInventory};
+pub use invocation::InvocationSession;
+pub use record::{SubagentRecord, SubagentStatus};
+pub use runner::{PreparedSubagentInvocation, SubagentInvocationError, SubagentRunner};
+pub use service::{build_inventory_for_config, source_tree_from_config};

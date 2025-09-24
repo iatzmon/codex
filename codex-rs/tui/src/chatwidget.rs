@@ -28,6 +28,7 @@ use codex_core::protocol::McpToolCallEndEvent;
 use codex_core::protocol::Op;
 use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::StreamErrorEvent;
+use codex_core::protocol::SubagentApprovalRequestEvent;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TokenUsage;
 use codex_core::protocol::TokenUsageInfo;
@@ -134,6 +135,7 @@ pub(crate) struct ChatWidgetInit {
 pub(crate) struct ChatWidget {
     app_event_tx: AppEventSender,
     codex_op_tx: UnboundedSender<Op>,
+    _conversation_manager: Arc<ConversationManager>,
     bottom_pane: BottomPane,
     active_exec_cell: Option<ExecCell>,
     config: Config,
@@ -452,6 +454,20 @@ impl ChatWidget {
             |q| q.push_apply_patch_approval(id, ev),
             |s| s.handle_apply_patch_approval_now(id2, ev2),
         );
+    }
+
+    fn on_subagent_approval_request(&mut self, event: SubagentApprovalRequestEvent) {
+        self.bottom_pane
+            .push_approval_request(ApprovalRequest::Subagent {
+                id: event.id.clone(),
+                name: event.subagent,
+                description: event.description,
+                extra_instructions: event.extra_instructions,
+                allowed_tools: event.allowed_tools,
+                requested_tools: event.requested_tools,
+                model: event.model,
+            });
+        self.request_redraw();
     }
 
     fn on_exec_command_begin(&mut self, ev: ExecCommandBeginEvent) {
@@ -793,12 +809,17 @@ impl ChatWidget {
             custom_slash_commands: custom_slash_commands.clone(),
         });
 
-        let codex_op_tx = spawn_agent(config.clone(), app_event_tx.clone(), conversation_manager);
+        let codex_op_tx = spawn_agent(
+            config.clone(),
+            app_event_tx.clone(),
+            conversation_manager.clone(),
+        );
 
         Self {
             app_event_tx,
             frame_requester,
             codex_op_tx,
+            _conversation_manager: conversation_manager,
             bottom_pane,
             active_exec_cell: None,
             config: config.clone(),
@@ -832,6 +853,7 @@ impl ChatWidget {
     /// Create a ChatWidget attached to an existing conversation (e.g., a fork).
     pub(crate) fn new_from_existing(
         common: ChatWidgetInit,
+        conversation_manager: Arc<ConversationManager>,
         conversation: std::sync::Arc<codex_core::CodexConversation>,
         session_configured: codex_core::protocol::SessionConfiguredEvent,
     ) -> Self {
@@ -868,6 +890,7 @@ impl ChatWidget {
             app_event_tx,
             frame_requester,
             codex_op_tx,
+            _conversation_manager: conversation_manager,
             bottom_pane,
             active_exec_cell: None,
             config: config.clone(),
@@ -1248,36 +1271,31 @@ impl ChatWidget {
 
     fn submit_user_message(&mut self, user_message: UserMessage) {
         let UserMessage { text, image_paths } = user_message;
-        let mut items: Vec<InputItem> = Vec::new();
 
+        if text.is_empty() && image_paths.is_empty() {
+            return;
+        }
+
+        let mut items: Vec<InputItem> = Vec::new();
         if !text.is_empty() {
             items.push(InputItem::Text { text: text.clone() });
         }
-
         for path in image_paths {
             items.push(InputItem::LocalImage { path });
         }
 
-        if items.is_empty() {
-            return;
-        }
-
-        self.codex_op_tx
-            .send(Op::UserInput { items })
-            .unwrap_or_else(|e| {
-                tracing::error!("failed to send message: {e}");
-            });
-
-        // Persist the text to cross-session message history.
-        if !text.is_empty() {
+        if !items.is_empty() {
             self.codex_op_tx
-                .send(Op::AddToHistory { text: text.clone() })
-                .unwrap_or_else(|e| {
-                    tracing::error!("failed to send AddHistory op: {e}");
-                });
+                .send(Op::UserInput { items })
+                .unwrap_or_else(|e| tracing::error!("failed to send message: {e}"));
+
+            if !text.is_empty() {
+                self.codex_op_tx
+                    .send(Op::AddToHistory { text: text.clone() })
+                    .unwrap_or_else(|e| tracing::error!("failed to send AddHistory op: {e}"));
+            }
         }
 
-        // Only show the text portion in conversation history.
         if !text.is_empty() {
             self.add_to_history(history_cell::new_user_prompt(text));
         }
@@ -1358,6 +1376,7 @@ impl ChatWidget {
             EventMsg::ApplyPatchApprovalRequest(ev) => {
                 self.on_apply_patch_approval_request(id.unwrap_or_default(), ev)
             }
+            EventMsg::SubagentApprovalRequest(event) => self.on_subagent_approval_request(event),
             EventMsg::ExecCommandBegin(ev) => self.on_exec_command_begin(ev),
             EventMsg::ExecCommandOutputDelta(delta) => self.on_exec_command_output_delta(delta),
             EventMsg::PatchApplyBegin(ev) => self.on_patch_apply_begin(ev),
@@ -1888,6 +1907,16 @@ fn extract_first_bold(s: &str) -> Option<String> {
         i += 1;
     }
     None
+}
+
+pub fn subagent_quickstart_steps() -> Vec<String> {
+    vec![
+        "Enable subagents via ~/.codex/config.toml".to_string(),
+        "Create or place Markdown definitions under .codex/agents/".to_string(),
+        "Inspect available subagents with `codex agents list`".to_string(),
+        "Run a subagent with `codex agents run <name>`".to_string(),
+        "View invocation details with `codex agents show <name>`".to_string(),
+    ]
 }
 
 #[cfg(test)]

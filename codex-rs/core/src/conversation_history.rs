@@ -35,6 +35,14 @@ impl ConversationHistory {
     pub(crate) fn replace(&mut self, items: Vec<ResponseItem>) {
         self.items = items;
     }
+
+    #[cfg(test)]
+    pub(crate) fn user_message_count(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|item| matches!(item, ResponseItem::Message { role, .. } if role == "user"))
+            .count()
+    }
 }
 
 /// Anything that is not a system message or "reasoning" message is considered
@@ -116,5 +124,17 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn counts_user_messages() {
+        let mut history = ConversationHistory::default();
+        let user = user_msg("please run subagent");
+        let assistant = assistant_msg("sure");
+        history.record_items([&user, &assistant]);
+        assert_eq!(history.user_message_count(), 1);
+        let second_user = user_msg("go ahead");
+        history.record_items([&second_user]);
+        assert_eq!(history.user_message_count(), 2);
     }
 }

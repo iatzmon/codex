@@ -77,6 +77,7 @@ use crate::mcp_tool_call::handle_mcp_tool_call;
 use crate::model_family::find_family_for_model;
 use crate::openai_model_info::get_model_info;
 use crate::openai_tools::ApplyPatchToolArgs;
+use crate::openai_tools::SubagentToolRegistration;
 use crate::openai_tools::ToolsConfig;
 use crate::openai_tools::ToolsConfigParams;
 use crate::openai_tools::get_openai_tools;
@@ -122,6 +123,8 @@ use crate::protocol::ReviewOutputEvent;
 use crate::protocol::SandboxPolicy;
 use crate::protocol::SessionConfiguredEvent;
 use crate::protocol::StreamErrorEvent;
+use crate::protocol::SubagentApprovalDecision;
+use crate::protocol::SubagentApprovalRequestEvent;
 use crate::protocol::Submission;
 use crate::protocol::TaskCompleteEvent;
 use crate::protocol::TokenUsage;
@@ -140,6 +143,15 @@ use crate::slash_commands::CommandInvocation;
 use crate::slash_commands::InvocationError;
 #[cfg(feature = "slash_commands")]
 use crate::slash_commands::SlashCommandService;
+use crate::subagents::InvocationSession;
+use crate::subagents::SubagentConfig;
+use crate::subagents::SubagentDefinition;
+use crate::subagents::SubagentInventory;
+use crate::subagents::SubagentInvocationError;
+use crate::subagents::SubagentRunner;
+use crate::subagents::build_inventory_for_config;
+use crate::subagents::config::SubagentDiscoveryMode;
+use crate::subagents::execute_subagent_invocation;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use crate::unified_exec::UnifiedExecSessionManager;
 use crate::user_instructions::UserInstructions;
@@ -312,6 +324,7 @@ struct State {
     current_task: Option<AgentTask>,
     pending_approvals: HashMap<String, oneshot::Sender<ReviewDecision>>,
     pending_input: Vec<ResponseInputItem>,
+    pending_subagent_approvals: HashMap<String, oneshot::Sender<SubagentApprovalDecision>>,
     history: ConversationHistory,
     token_info: Option<TokenUsageInfo>,
     next_internal_sub_id: u64,
@@ -364,6 +377,9 @@ pub(crate) struct TurnContext {
     pub(crate) shell_environment_policy: ShellEnvironmentPolicy,
     pub(crate) tools_config: ToolsConfig,
     pub(crate) is_review_mode: bool,
+    pub(crate) subagent_inventory: Option<Arc<SubagentInventory>>,
+    pub(crate) subagent_tool: Option<SubagentToolRegistration>,
+    pub(crate) subagent_config: Option<SubagentConfig>,
 }
 
 impl TurnContext {
@@ -372,6 +388,93 @@ impl TurnContext {
             .map(PathBuf::from)
             .map_or_else(|| self.cwd.clone(), |p| self.cwd.join(p))
     }
+}
+
+fn compute_subagent_tooling(
+    config: &Config,
+) -> (
+    Option<Arc<SubagentInventory>>,
+    Option<SubagentToolRegistration>,
+    Option<SubagentConfig>,
+) {
+    if !config.subagents.is_enabled() {
+        return (None, None, None);
+    }
+
+    let inventory = build_inventory_for_config(config);
+    let registration = SubagentToolRegistration::from_inventory(&config.subagents, &inventory);
+    let subagent_config = Some(config.subagents.clone());
+
+    (Some(Arc::new(inventory)), registration, subagent_config)
+}
+
+const SUBAGENT_GUIDANCE_START: &str = "--- subagent-guidance ---";
+const SUBAGENT_GUIDANCE_END: &str = "--- end-subagent-guidance ---";
+
+fn merge_subagent_user_instructions(
+    existing: Option<String>,
+    inventory: Option<&SubagentInventory>,
+) -> Option<String> {
+    let Some(inventory) = inventory else {
+        return existing;
+    };
+    let Some(body) = build_subagent_guidance(inventory) else {
+        return existing;
+    };
+
+    let block = format!("{SUBAGENT_GUIDANCE_START}\n{body}\n{SUBAGENT_GUIDANCE_END}");
+
+    match existing {
+        Some(mut text) => {
+            if let Some(start) = text.find(SUBAGENT_GUIDANCE_START) {
+                let suffix_search = &text[start..];
+                if let Some(end_rel) = suffix_search.find(SUBAGENT_GUIDANCE_END) {
+                    let end = start + end_rel + SUBAGENT_GUIDANCE_END.len();
+                    text.replace_range(start..end, &block);
+                } else {
+                    text.replace_range(start.., &block);
+                }
+            } else {
+                if !text.trim_end().is_empty() {
+                    if !text.ends_with('\n') {
+                        text.push('\n');
+                    }
+                    text.push('\n');
+                }
+                text.push_str(&block);
+            }
+            Some(text)
+        }
+        None => Some(block),
+    }
+}
+
+fn build_subagent_guidance(inventory: &SubagentInventory) -> Option<String> {
+    if inventory.subagents.is_empty() {
+        return None;
+    }
+
+    let mut lines = Vec::new();
+    lines.push("Subagent delegation guidance:".to_string());
+    lines.push(
+        "- Read available subagent descriptions each turn and follow any directives they contain."
+            .to_string(),
+    );
+    lines.push("- When a description says to proactively handle the current request, name the subagent, ask the user for approval, invoke it with `invoke_subagent` (retry with `confirmed: true` after approval), and relay the subagent's report before adding your own analysis. Continue solo only if the user declines.".to_string());
+    lines.push("- Delegate only when the user's request matches the subagent's remit.".to_string());
+    lines.push("Available subagents:".to_string());
+
+    for record in inventory.subagents.values() {
+        let name = &record.definition.name;
+        let description = record.definition.description.trim();
+        if description.is_empty() {
+            lines.push(format!("  - {name}"));
+        } else {
+            lines.push(format!("  - {name}: {description}"));
+        }
+    }
+
+    Some(lines.join("\n"))
 }
 
 /// Configure the model session.
@@ -432,8 +535,9 @@ async fn handle_slash_command_turn(
         per_turn_config.model_context_window = Some(model_info.context_window);
     }
 
+    let per_turn_config = Arc::new(per_turn_config);
     let client = ModelClient::new(
-        Arc::new(per_turn_config),
+        per_turn_config.clone(),
         auth_manager,
         provider,
         base_context.client.get_reasoning_effort(),
@@ -453,16 +557,27 @@ async fn handle_slash_command_turn(
         experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
     });
 
+    let (subagent_inventory, subagent_tool, subagent_config) =
+        compute_subagent_tooling(per_turn_config.as_ref());
+
+    let user_instructions = merge_subagent_user_instructions(
+        base_context.user_instructions.clone(),
+        subagent_inventory.as_deref(),
+    );
+
     let turn_context = TurnContext {
         client,
         tools_config,
-        user_instructions: base_context.user_instructions.clone(),
+        user_instructions,
         base_instructions: base_context.base_instructions.clone(),
         approval_policy: base_context.approval_policy,
         sandbox_policy: base_context.sandbox_policy.clone(),
         shell_environment_policy: base_context.shell_environment_policy.clone(),
         cwd: base_context.cwd.clone(),
         is_review_mode: base_context.is_review_mode,
+        subagent_inventory,
+        subagent_tool,
+        subagent_config,
     };
 
     let task = AgentTask::spawn(sess.clone(), Arc::new(turn_context), sub_id, items);
@@ -489,6 +604,11 @@ impl Session {
             notify,
             cwd,
         } = configure_session;
+        let (subagent_inventory, subagent_tool, subagent_config) =
+            compute_subagent_tooling(config.as_ref());
+        let user_instructions =
+            merge_subagent_user_instructions(user_instructions, subagent_inventory.as_deref());
+
         debug!("Configuring session: model={model}; provider={provider:?}");
         if !cwd.is_absolute() {
             return Err(anyhow::anyhow!("cwd is not absolute: {cwd:?}"));
@@ -619,6 +739,9 @@ impl Session {
             shell_environment_policy: config.shell_environment_policy.clone(),
             cwd,
             is_review_mode: false,
+            subagent_inventory,
+            subagent_tool,
+            subagent_config,
         };
 
         if config.plan_mode.plan_enabled {
@@ -839,6 +962,56 @@ impl Session {
         };
         self.send_event(event).await;
         rx_approve
+    }
+
+    pub async fn request_subagent_approval(
+        &self,
+        sub_id: String,
+        mut payload: SubagentApprovalRequestEvent,
+    ) -> oneshot::Receiver<SubagentApprovalDecision> {
+        let (tx_decision, rx_decision) = oneshot::channel();
+        let prev_entry = {
+            let mut state = self.state.lock_unchecked();
+            state
+                .pending_subagent_approvals
+                .insert(sub_id.clone(), tx_decision)
+        };
+        if prev_entry.is_some() {
+            warn!("Overwriting existing pending subagent approval for id {sub_id}");
+        }
+
+        payload.id = sub_id.clone();
+        let event = Event {
+            id: sub_id,
+            msg: EventMsg::SubagentApprovalRequest(payload),
+        };
+        self.send_event(event).await;
+        rx_decision
+    }
+
+    pub fn notify_subagent_approval(&self, id: &str, decision: SubagentApprovalDecision) {
+        let entry = {
+            let mut state = self.state.lock_unchecked();
+            state.pending_subagent_approvals.remove(id)
+        };
+        match entry {
+            Some(tx_decision) => {
+                let _ = tx_decision.send(decision);
+            }
+            None => {
+                warn!("No pending subagent approval found for id: {id}");
+            }
+        }
+    }
+
+    pub fn clear_pending_subagent_approval(&self, id: &str) {
+        let entry = {
+            let mut state = self.state.lock_unchecked();
+            state.pending_subagent_approvals.remove(id)
+        };
+        if entry.is_some() {
+            trace!("Cleared pending subagent approval for id: {id}");
+        }
     }
 
     pub fn notify_approval(&self, sub_id: &str, decision: ReviewDecision) {
@@ -1973,8 +2146,9 @@ async fn submission_loop(
                     updated_config.model_context_window = Some(model_info.context_window);
                 }
 
+                let updated_config = Arc::new(updated_config);
                 let client = ModelClient::new(
-                    Arc::new(updated_config),
+                    updated_config.clone(),
                     auth_manager,
                     provider,
                     effective_effort,
@@ -2000,16 +2174,27 @@ async fn submission_loop(
                     experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
                 });
 
+                let (subagent_inventory, subagent_tool, subagent_config) =
+                    compute_subagent_tooling(updated_config.as_ref());
+
+                let user_instructions = merge_subagent_user_instructions(
+                    prev.user_instructions.clone(),
+                    subagent_inventory.as_deref(),
+                );
+
                 let new_turn_context = TurnContext {
                     client,
                     tools_config,
-                    user_instructions: prev.user_instructions.clone(),
+                    user_instructions,
                     base_instructions: prev.base_instructions.clone(),
                     approval_policy: new_approval_policy,
                     sandbox_policy: new_sandbox_policy.clone(),
                     shell_environment_policy: prev.shell_environment_policy.clone(),
                     cwd: new_cwd.clone(),
                     is_review_mode: false,
+                    subagent_inventory,
+                    subagent_tool,
+                    subagent_config,
                 };
 
                 // Install the new persistent context for subsequent tasks/turns.
@@ -2186,13 +2371,22 @@ async fn submission_loop(
 
                     // Build a new client with per‑turn reasoning settings.
                     // Reuse the same provider and session id; auth defaults to env/API key.
+                    let per_turn_config = Arc::new(per_turn_config);
                     let client = ModelClient::new(
-                        Arc::new(per_turn_config),
+                        per_turn_config.clone(),
                         auth_manager,
                         provider,
                         effort,
                         summary,
                         sess.conversation_id,
+                    );
+
+                    let (subagent_inventory, subagent_tool, subagent_config) =
+                        compute_subagent_tooling(per_turn_config.as_ref());
+
+                    let user_instructions = merge_subagent_user_instructions(
+                        turn_context.user_instructions.clone(),
+                        subagent_inventory.as_deref(),
                     );
 
                     let fresh_turn_context = TurnContext {
@@ -2210,13 +2404,16 @@ async fn submission_loop(
                             experimental_unified_exec_tool: config
                                 .use_experimental_unified_exec_tool,
                         }),
-                        user_instructions: turn_context.user_instructions.clone(),
+                        user_instructions,
                         base_instructions: turn_context.base_instructions.clone(),
                         approval_policy,
                         sandbox_policy,
                         shell_environment_policy: turn_context.shell_environment_policy.clone(),
                         cwd,
                         is_review_mode: false,
+                        subagent_inventory,
+                        subagent_tool,
+                        subagent_config,
                     };
 
                     // if the environment context has changed, record it in the conversation history
@@ -2248,6 +2445,10 @@ async fn submission_loop(
                 }
                 other => sess.notify_approval(&id, other),
             },
+            Op::SubagentApproval { id, name, decision } => {
+                trace!(subagent = %name, request_id = %id, decision = ?decision, "subagent approval received");
+                sess.notify_subagent_approval(&id, decision);
+            }
             Op::AddToHistory { text } => {
                 let id = sess.conversation_id;
                 let config = config.clone();
@@ -2421,6 +2622,9 @@ async fn submission_loop(
                             shell_environment_policy: previous.shell_environment_policy.clone(),
                             cwd: previous.cwd.clone(),
                             is_review_mode: previous.is_review_mode,
+                            subagent_inventory: previous.subagent_inventory.clone(),
+                            subagent_tool: previous.subagent_tool.clone(),
+                            subagent_config: previous.subagent_config.clone(),
                         });
                         sess.ensure_plan_mode_prompt_recorded().await;
                     }
@@ -2462,6 +2666,9 @@ async fn submission_loop(
                         shell_environment_policy: previous.shell_environment_policy.clone(),
                         cwd: previous.cwd.clone(),
                         is_review_mode: previous.is_review_mode,
+                        subagent_inventory: previous.subagent_inventory.clone(),
+                        subagent_tool: previous.subagent_tool.clone(),
+                        subagent_config: previous.subagent_config.clone(),
                     });
                 }
                 Err(message) => {
@@ -2505,6 +2712,9 @@ async fn submission_loop(
                         shell_environment_policy: previous.shell_environment_policy.clone(),
                         cwd: previous.cwd.clone(),
                         is_review_mode: previous.is_review_mode,
+                        subagent_inventory: previous.subagent_inventory.clone(),
+                        subagent_tool: previous.subagent_tool.clone(),
+                        subagent_config: previous.subagent_config.clone(),
                     });
 
                     let follow_up_sub_id =
@@ -2635,14 +2845,18 @@ async fn spawn_review_thread(
         per_turn_config.model_context_window = Some(model_info.context_window);
     }
 
+    let per_turn_config = Arc::new(per_turn_config);
     let client = ModelClient::new(
-        Arc::new(per_turn_config),
+        per_turn_config.clone(),
         auth_manager,
         provider,
         parent_turn_context.client.get_reasoning_effort(),
         parent_turn_context.client.get_reasoning_summary(),
         sess.conversation_id,
     );
+
+    let (subagent_inventory, subagent_tool, subagent_config) =
+        compute_subagent_tooling(per_turn_config.as_ref());
 
     let review_turn_context = TurnContext {
         client,
@@ -2654,6 +2868,9 @@ async fn spawn_review_thread(
         shell_environment_policy: parent_turn_context.shell_environment_policy.clone(),
         cwd: parent_turn_context.cwd.clone(),
         is_review_mode: true,
+        subagent_inventory,
+        subagent_tool,
+        subagent_config,
     };
 
     // Seed the child task with the review prompt as the initial user message.
@@ -3010,6 +3227,7 @@ async fn run_turn(
     let tools = get_openai_tools(
         &turn_context.tools_config,
         Some(sess.mcp_connection_manager.list_all_tools()),
+        turn_context.subagent_tool.as_ref(),
     );
 
     let prompt = Prompt {
@@ -3557,6 +3775,256 @@ async fn handle_function_call(
                 },
             };
             ResponseInputItem::FunctionCallOutput { call_id, output }
+        }
+        "invoke_subagent" => {
+            #[derive(Deserialize)]
+            struct InvokeSubagentArgs {
+                name: String,
+                #[serde(default)]
+                instructions: Option<String>,
+                #[serde(default)]
+                requested_tools: Vec<String>,
+                #[serde(default)]
+                model: Option<String>,
+                #[serde(default)]
+                confirmed: bool,
+            }
+
+            let args = match serde_json::from_str::<InvokeSubagentArgs>(&arguments) {
+                Ok(args) => args,
+                Err(err) => {
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload {
+                            content: format!("failed to parse function arguments: {err}"),
+                            success: Some(false),
+                        },
+                    };
+                }
+            };
+
+            let Some(inventory_arc) = turn_context.subagent_inventory.as_ref().map(Arc::clone)
+            else {
+                return ResponseInputItem::FunctionCallOutput {
+                    call_id,
+                    output: FunctionCallOutputPayload {
+                        content: "Subagents feature is disabled for this session.".to_string(),
+                        success: Some(false),
+                    },
+                };
+            };
+            let Some(subagent_config) = turn_context.subagent_config.clone() else {
+                return ResponseInputItem::FunctionCallOutput {
+                    call_id,
+                    output: FunctionCallOutputPayload {
+                        content:
+                            "Subagents configuration is unavailable; enable subagents.enabled in config.".to_string(),
+                        success: Some(false),
+                    },
+                };
+            };
+
+            let normalized_name = SubagentDefinition::normalize_name(args.name.trim());
+            let mut session = InvocationSession::new(&normalized_name);
+            session.parent_session_id = Some(sess.conversation_id.to_string());
+            if !args.requested_tools.is_empty() {
+                session.requested_tools = args.requested_tools.clone();
+            }
+            if let Some(model) = args.model.clone() {
+                session.resolved_model = Some(model);
+            }
+            if let Some(instructions) = args
+                .instructions
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                session.extra_instructions = Some(instructions.to_string());
+                session
+                    .execution_log
+                    .push(format!("instructions: {instructions}"));
+            }
+
+            if args.confirmed || matches!(subagent_config.discovery, SubagentDiscoveryMode::Manual)
+            {
+                session = session.confirmed();
+            }
+
+            let runner = SubagentRunner::new(&subagent_config, inventory_arc.as_ref());
+            let mut current_session = session;
+            let prepared = loop {
+                match runner.invoke(current_session) {
+                    Ok(prepared) => break prepared,
+                    Err(SubagentInvocationError::ConfirmationRequired {
+                        subagent,
+                        record,
+                        session: pending_session,
+                    }) => {
+                        let description = if record.definition.description.trim().is_empty() {
+                            None
+                        } else {
+                            Some(record.definition.description.clone())
+                        };
+
+                        let extra_instructions = pending_session
+                            .extra_instructions
+                            .clone()
+                            .filter(|s| !s.trim().is_empty());
+
+                        let payload = SubagentApprovalRequestEvent {
+                            id: sub_id.clone(),
+                            subagent: subagent.clone(),
+                            description,
+                            extra_instructions,
+                            allowed_tools: record.effective_tools.clone(),
+                            requested_tools: pending_session.requested_tools.clone(),
+                            model: pending_session
+                                .resolved_model
+                                .clone()
+                                .or_else(|| record.effective_model.clone()),
+                        };
+
+                        let rx = sess
+                            .request_subagent_approval(sub_id.clone(), payload)
+                            .await;
+                        let decision = rx.await.unwrap_or_default();
+                        sess.clear_pending_subagent_approval(&sub_id);
+                        match decision {
+                            SubagentApprovalDecision::Approved => {
+                                current_session = pending_session.confirmed();
+                            }
+                            SubagentApprovalDecision::Denied => {
+                                return ResponseInputItem::FunctionCallOutput {
+                                    call_id,
+                                    output: FunctionCallOutputPayload {
+                                        content: format!(
+                                            "Subagent '{subagent}' invocation denied by user."
+                                        ),
+                                        success: Some(false),
+                                    },
+                                };
+                            }
+                        }
+                    }
+                    Err(SubagentInvocationError::FeatureDisabled) => {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload {
+                                content: "Subagents feature is disabled.".to_string(),
+                                success: Some(false),
+                            },
+                        };
+                    }
+                    Err(SubagentInvocationError::UnknownSubagent(name)) => {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload {
+                                content: format!("No subagent named '{name}'."),
+                                success: Some(false),
+                            },
+                        };
+                    }
+                    Err(SubagentInvocationError::InvalidSubagent(name)) => {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload {
+                                content: format!("Subagent '{name}' is invalid."),
+                                success: Some(false),
+                            },
+                        };
+                    }
+                    Err(SubagentInvocationError::DisabledSubagent(name)) => {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload {
+                                content: format!("Subagent '{name}' is disabled."),
+                                success: Some(false),
+                            },
+                        };
+                    }
+                    Err(SubagentInvocationError::ToolNotAllowed { subagent, tool }) => {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload {
+                                content: format!(
+                                    "Tool '{tool}' not allowed for subagent '{subagent}'."
+                                ),
+                                success: Some(false),
+                            },
+                        };
+                    }
+                    Err(SubagentInvocationError::ExecutionFailed(reason)) => {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload {
+                                content: reason,
+                                success: Some(false),
+                            },
+                        };
+                    }
+                    Err(SubagentInvocationError::MissingAuthManager) => {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload {
+                                content: "Subagent execution requires authentication context."
+                                    .to_string(),
+                                success: Some(false),
+                            },
+                        };
+                    }
+                }
+            };
+
+            let config_arc = turn_context.client.get_config();
+            let auth_manager = match turn_context.client.get_auth_manager() {
+                Some(manager) => manager,
+                None => {
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload {
+                            content: "Subagent execution requires authentication context."
+                                .to_string(),
+                            success: Some(false),
+                        },
+                    };
+                }
+            };
+
+            match execute_subagent_invocation(config_arc.as_ref(), auth_manager, prepared).await {
+                Ok(result_session) => {
+                    let detail_artifacts: Vec<String> = result_session
+                        .detail_artifacts
+                        .iter()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .collect();
+                    let payload_json = serde_json::json!({
+                        "name": result_session.subagent_name,
+                        "summary": result_session.summary,
+                        "detail_artifacts": detail_artifacts,
+                        "requested_tools": result_session.requested_tools,
+                        "model": result_session.resolved_model,
+                        "execution_log": result_session.execution_log,
+                    });
+
+                    ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload {
+                            content: payload_json.to_string(),
+                            success: Some(true),
+                        },
+                    }
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload {
+                            content: message,
+                            success: Some(false),
+                        },
+                    }
+                }
+            }
         }
         "apply_patch" => {
             let args = match serde_json::from_str::<ApplyPatchToolArgs>(&arguments) {
@@ -4683,16 +5151,25 @@ mod tests {
             include_view_image_tool: config.include_view_image_tool,
             experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
         });
+        let (subagent_inventory, subagent_tool, subagent_config) =
+            compute_subagent_tooling(config.as_ref());
+        let user_instructions = merge_subagent_user_instructions(
+            config.user_instructions.clone(),
+            subagent_inventory.as_deref(),
+        );
         let turn_context = TurnContext {
             client,
             cwd: config.cwd.clone(),
             base_instructions: config.base_instructions.clone(),
-            user_instructions: config.user_instructions.clone(),
+            user_instructions,
             approval_policy: config.approval_policy,
             sandbox_policy: config.sandbox_policy.clone(),
             shell_environment_policy: config.shell_environment_policy.clone(),
             tools_config,
             is_review_mode: false,
+            subagent_inventory,
+            subagent_tool,
+            subagent_config,
         };
         let session = Session {
             conversation_id,

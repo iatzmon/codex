@@ -12,6 +12,10 @@ use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::SessionConfiguredEvent;
 use crate::rollout::RolloutRecorder;
+use crate::subagents::{
+    InvocationSession, SubagentInventory, SubagentInvocationError, SubagentRunner,
+    build_inventory_for_config, execute_subagent_invocation,
+};
 use codex_protocol::mcp_protocol::ConversationId;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InitialHistory;
@@ -20,6 +24,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::{info, warn};
 
 /// Represents a newly created Codex conversation, including the first event
 /// (which is [`EventMsg::SessionConfigured`]).
@@ -42,6 +47,10 @@ impl ConversationManager {
             conversations: Arc::new(RwLock::new(HashMap::new())),
             auth_manager,
         }
+    }
+
+    pub fn auth_manager(&self) -> Arc<AuthManager> {
+        self.auth_manager.clone()
     }
 
     /// Construct with a dummy AuthManager containing the provided CodexAuth.
@@ -166,6 +175,45 @@ impl ConversationManager {
 
         self.finalize_spawn(codex, conversation_id, session).await
     }
+
+    /// Build the discovered subagent inventory for the provided configuration.
+    ///
+    /// The resulting inventory captures precedence, conflicts, and validation
+    /// details derived from `.codex/agents/` and `~/.codex/agents/` trees. The
+    /// method emits structured tracing for discovery diagnostics.
+    pub fn subagent_inventory(&self, config: &Config) -> SubagentInventory {
+        let inventory = build_inventory_for_config(config);
+        log_subagent_inventory(&inventory);
+        inventory
+    }
+
+    /// Invoke a subagent by building the current inventory and delegating to the
+    /// runner. The caller supplies an `InvocationSession` describing the
+    /// requested tools, confirmation status, and optional pre-populated log
+    /// metadata. Discovery diagnostics are logged prior to execution.
+    pub async fn invoke_subagent(
+        &self,
+        config: &Config,
+        session: InvocationSession,
+    ) -> Result<InvocationSession, SubagentInvocationError> {
+        let inventory = build_inventory_for_config(config);
+        log_subagent_inventory(&inventory);
+        let runner = SubagentRunner::new(&config.subagents, &inventory);
+        let prepared = runner.invoke(session)?;
+        let config_clone = config.clone();
+        let result =
+            execute_subagent_invocation(&config_clone, self.auth_manager(), prepared).await;
+        match result {
+            Ok(invocation) => {
+                log_subagent_invocation(&invocation);
+                Ok(invocation)
+            }
+            Err(err) => {
+                log_subagent_invocation_error(&err);
+                Err(err)
+            }
+        }
+    }
 }
 
 /// Return a prefix of `items` obtained by dropping the last `n` user messages
@@ -202,6 +250,50 @@ fn truncate_after_dropping_last_messages(history: InitialHistory, n: usize) -> I
     } else {
         InitialHistory::Forked(rolled)
     }
+}
+
+fn log_subagent_inventory(inventory: &SubagentInventory) {
+    for event in &inventory.discovery_events {
+        info!(target = "codex::subagents", message = %event.message);
+    }
+
+    for conflict in &inventory.conflicts {
+        info!(
+            target = "codex::subagents",
+            name = %conflict.name,
+            losing_scope = ?conflict.losing_scope,
+            reason = %conflict.reason,
+            "subagent precedence conflict"
+        );
+    }
+
+    for record in inventory.invalid() {
+        if record.validation_errors.is_empty() {
+            continue;
+        }
+        warn!(
+            target = "codex::subagents",
+            name = %record.definition.name,
+            errors = ?record.validation_errors,
+            "invalid subagent definition"
+        );
+    }
+}
+
+fn log_subagent_invocation(session: &InvocationSession) {
+    info!(
+        target = "codex::subagents",
+        subagent = %session.subagent_name,
+        model = session.resolved_model.as_deref().unwrap_or(""),
+        tools = ?session.requested_tools,
+        summary = session.summary.as_deref().unwrap_or(""),
+        details = ?session.detail_artifacts,
+        "subagent invocation complete"
+    );
+}
+
+fn log_subagent_invocation_error(err: &SubagentInvocationError) {
+    warn!(target = "codex::subagents", error = %err, "subagent invocation failed");
 }
 
 #[cfg(test)]

@@ -151,6 +151,16 @@ pub enum Op {
         decision: ReviewDecision,
     },
 
+    /// Approve or deny execution of a subagent.
+    SubagentApproval {
+        /// Identifier for the pending approval request.
+        id: String,
+        /// Normalized name of the subagent being approved.
+        name: String,
+        /// The user's decision for the requested invocation.
+        decision: SubagentApprovalDecision,
+    },
+
     /// Append an entry to the persistent cross-session message history.
     ///
     /// Note the entry is not guaranteed to be logged if the user has
@@ -512,6 +522,9 @@ pub enum EventMsg {
     ExecApprovalRequest(ExecApprovalRequestEvent),
 
     ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent),
+
+    /// Prompt the user to approve or deny invoking a subagent.
+    SubagentApprovalRequest(SubagentApprovalRequestEvent),
 
     BackgroundEvent(BackgroundEventEvent),
 
@@ -1184,6 +1197,29 @@ pub struct ApplyPatchApprovalRequestEvent {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct SubagentApprovalRequestEvent {
+    /// Identifier for correlating subsequent approval responses.
+    pub id: String,
+    /// Normalized subagent identifier.
+    pub subagent: String,
+    /// Human-readable description sourced from definition metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Call-specific extra instructions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_instructions: Option<String>,
+    /// Allowed tools declared on the subagent definition.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_tools: Vec<String>,
+    /// Requested tools for this invocation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requested_tools: Vec<String>,
+    /// Resolved model that will be used if approved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
 pub struct BackgroundEventEvent {
     pub message: String,
 }
@@ -1288,6 +1324,17 @@ pub enum ReviewDecision {
     /// User has denied this command and the agent should not do anything until
     /// the user's next command.
     Abort,
+}
+
+#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentApprovalDecision {
+    /// User approved invoking the subagent.
+    Approved,
+
+    /// User denied the invocation request.
+    #[default]
+    Denied,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS)]

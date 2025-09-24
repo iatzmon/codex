@@ -17,9 +17,11 @@ use codex_exec::Cli as ExecCli;
 use codex_tui::Cli as TuiCli;
 use std::path::PathBuf;
 
+mod agents;
 mod hooks;
 mod mcp_cmd;
 
+use crate::agents::AgentsCli;
 use crate::mcp_cmd::McpCli;
 use crate::proto::ProtoCli;
 
@@ -86,6 +88,9 @@ enum Subcommand {
 
     /// Inspect and manage lifecycle hooks.
     Hooks(hooks::HooksCli),
+
+    /// Manage subagents (list, run, show).
+    Agents(AgentsCli),
 }
 
 #[derive(Debug, Parser)]
@@ -282,6 +287,14 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
         }
         Some(Subcommand::Hooks(hooks_cli)) => {
             hooks::run_hooks_cli(hooks_cli, root_config_overrides)?;
+        }
+        Some(Subcommand::Agents(mut agents_cli)) => {
+            let cwd_override = interactive.cwd.clone();
+            prepend_config_flags(
+                &mut agents_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
+            agents::run_agents_cli(agents_cli, cwd_override).await?;
         }
     }
 

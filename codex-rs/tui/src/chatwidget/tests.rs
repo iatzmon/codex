@@ -3,6 +3,7 @@ use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
+use codex_core::ConversationManager;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::ConfigToml;
@@ -43,6 +44,7 @@ use std::fs::File;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tempfile::NamedTempFile;
 use tokio::sync::mpsc::unbounded_channel;
 use uuid::Uuid;
@@ -245,6 +247,9 @@ fn make_chatwidget_manual() -> (
     let widget = ChatWidget {
         app_event_tx,
         codex_op_tx: op_tx,
+        _conversation_manager: Arc::new(ConversationManager::new(AuthManager::shared(
+            cfg.codex_home.clone(),
+        ))),
         bottom_pane: bottom,
         active_exec_cell: None,
         config: cfg.clone(),
@@ -1937,6 +1942,7 @@ fn plan_header_includes_allowed_tools() {
             tests: Vec::new(),
             rollback: Vec::new(),
             success_criteria: Vec::new(),
+            metadata: None,
         },
     };
 
@@ -1989,6 +1995,7 @@ fn plan_header_snapshot() {
             tests: Vec::new(),
             rollback: Vec::new(),
             success_criteria: Vec::new(),
+            metadata: None,
         },
     };
 
@@ -2036,6 +2043,7 @@ fn plan_mode_updates_placeholder_text() {
             tests: Vec::new(),
             rollback: Vec::new(),
             success_criteria: Vec::new(),
+            metadata: None,
         },
     };
 
@@ -2084,6 +2092,7 @@ fn plan_mode_dialog_shows_after_update() {
             tests: Vec::new(),
             rollback: Vec::new(),
             success_criteria: Vec::new(),
+            metadata: None,
         },
     };
 
@@ -2136,6 +2145,7 @@ fn plan_mode_refine_resets_dialog_and_reopens_on_update() {
             tests: Vec::new(),
             rollback: Vec::new(),
             success_criteria: Vec::new(),
+            metadata: None,
         },
     };
 

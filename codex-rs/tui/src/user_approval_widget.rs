@@ -12,6 +12,7 @@ use std::sync::LazyLock;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::Op;
 use codex_core::protocol::ReviewDecision;
+use codex_core::protocol::SubagentApprovalDecision;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -49,6 +50,15 @@ pub(crate) enum ApprovalRequest {
     PlanMode {
         session: PlanModeSessionPayload,
     },
+    Subagent {
+        id: String,
+        name: String,
+        description: Option<String>,
+        extra_instructions: Option<String>,
+        allowed_tools: Vec<String>,
+        requested_tools: Vec<String>,
+        model: Option<String>,
+    },
 }
 
 /// Options displayed in the *select* mode.
@@ -59,6 +69,7 @@ enum SelectAction {
     Review(ReviewDecision),
     PlanApply(Option<AskForApproval>),
     PlanRefine,
+    Subagent(SubagentApprovalDecision),
 }
 
 struct SelectOption {
@@ -147,6 +158,23 @@ static PLAN_SELECT_OPTIONS: LazyLock<Vec<SelectOption>> = LazyLock::new(|| {
     ]
 });
 
+static SUBAGENT_SELECT_OPTIONS: LazyLock<Vec<SelectOption>> = LazyLock::new(|| {
+    vec![
+        SelectOption {
+            label: Line::from(vec!["Y".underlined(), "es".into()]),
+            description: "Approve and invoke the subagent",
+            key: KeyCode::Char('y'),
+            action: SelectAction::Subagent(SubagentApprovalDecision::Approved),
+        },
+        SelectOption {
+            label: Line::from(vec!["N".underlined(), "o".into()]),
+            description: "Cancel this subagent invocation",
+            key: KeyCode::Char('n'),
+            action: SelectAction::Subagent(SubagentApprovalDecision::Denied),
+        },
+    ]
+});
+
 /// A modal prompting the user to approve or deny the pending request.
 pub(crate) struct UserApprovalWidget {
     approval_request: ApprovalRequest,
@@ -215,6 +243,48 @@ impl UserApprovalWidget {
                 contents.push(Line::from("Select how to proceed with the plan."));
                 Paragraph::new(contents).wrap(Wrap { trim: false })
             }
+            ApprovalRequest::Subagent {
+                id: _,
+                name,
+                description,
+                extra_instructions,
+                allowed_tools,
+                requested_tools,
+                model,
+            } => {
+                let mut contents: Vec<Line> = Vec::new();
+                contents.push(Line::from(format!("Invoke subagent: {}", name)));
+                if let Some(desc) = description {
+                    if !desc.trim().is_empty() {
+                        contents.push(Line::from(desc.clone().italic()));
+                        contents.push(Line::from(""));
+                    }
+                }
+                if let Some(model) = model {
+                    contents.push(Line::from(format!("Model: {}", model)));
+                }
+                if !requested_tools.is_empty() {
+                    contents.push(Line::from("Requested tools:"));
+                    for tool in requested_tools {
+                        contents.push(Line::from(format!("  • {}", tool)));
+                    }
+                } else if !allowed_tools.is_empty() {
+                    contents.push(Line::from("Allowed tools:"));
+                    for tool in allowed_tools {
+                        contents.push(Line::from(format!("  • {}", tool)));
+                    }
+                }
+                if let Some(instructions) = extra_instructions {
+                    if !instructions.trim().is_empty() {
+                        contents.push(Line::from("Extra instructions:"));
+                        for line in instructions.lines() {
+                            contents.push(Line::from(format!("  {}", line)));
+                        }
+                    }
+                }
+                contents.push(Line::from("Approve invoking this subagent?"));
+                Paragraph::new(contents).wrap(Wrap { trim: false })
+            }
         };
 
         Self {
@@ -222,6 +292,7 @@ impl UserApprovalWidget {
                 ApprovalRequest::Exec { .. } => &COMMAND_SELECT_OPTIONS,
                 ApprovalRequest::ApplyPatch { .. } => &PATCH_SELECT_OPTIONS,
                 ApprovalRequest::PlanMode { .. } => &PLAN_SELECT_OPTIONS,
+                ApprovalRequest::Subagent { .. } => &SUBAGENT_SELECT_OPTIONS,
             },
             approval_request,
             app_event_tx,
@@ -262,6 +333,9 @@ impl UserApprovalWidget {
     pub(crate) fn on_ctrl_c(&mut self) {
         match self.approval_request {
             ApprovalRequest::PlanMode { .. } => self.send_plan_refine(),
+            ApprovalRequest::Subagent { .. } => {
+                self.send_subagent_decision(SubagentApprovalDecision::Denied)
+            }
             _ => self.send_decision(ReviewDecision::Abort),
         }
     }
@@ -281,6 +355,9 @@ impl UserApprovalWidget {
             }
             KeyCode::Esc => match self.approval_request {
                 ApprovalRequest::PlanMode { .. } => self.send_plan_refine(),
+                ApprovalRequest::Subagent { .. } => {
+                    self.send_subagent_decision(SubagentApprovalDecision::Denied)
+                }
                 _ => self.send_decision(ReviewDecision::Abort),
             },
             other => {
@@ -301,6 +378,7 @@ impl UserApprovalWidget {
             SelectAction::Review(decision) => self.send_decision(decision),
             SelectAction::PlanApply(target_mode) => self.send_plan_apply(target_mode),
             SelectAction::PlanRefine => self.send_plan_refine(),
+            SelectAction::Subagent(decision) => self.send_subagent_decision(decision),
         }
     }
 
@@ -313,6 +391,41 @@ impl UserApprovalWidget {
     fn send_plan_refine(&mut self) {
         self.app_event_tx.send(AppEvent::PlanModeRefineRequested);
         self.done = true;
+    }
+
+    fn send_subagent_decision(&mut self, decision: SubagentApprovalDecision) {
+        if let ApprovalRequest::Subagent { id, name, .. } = &self.approval_request {
+            let subagent_name = name.clone();
+
+            let spans: Vec<Span<'static>> = match decision {
+                SubagentApprovalDecision::Approved => vec![
+                    "✔ ".fg(Color::Green),
+                    "You ".into(),
+                    "approved".bold(),
+                    " invoking subagent ".into(),
+                    subagent_name.clone().dim(),
+                ],
+                SubagentApprovalDecision::Denied => vec![
+                    "✗ ".fg(Color::Red),
+                    "You ".into(),
+                    "canceled".bold(),
+                    " the subagent ".into(),
+                    subagent_name.clone().dim(),
+                ],
+            };
+
+            self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                history_cell::new_user_approval_decision(vec![Line::from(spans)]),
+            )));
+
+            self.app_event_tx
+                .send(AppEvent::CodexOp(Op::SubagentApproval {
+                    id: id.clone(),
+                    name: subagent_name,
+                    decision,
+                }));
+            self.done = true;
+        }
     }
 
     fn send_decision(&mut self, decision: ReviewDecision) {
@@ -394,6 +507,9 @@ impl UserApprovalWidget {
             ApprovalRequest::PlanMode { .. } => {
                 // Plan mode approvals are handled separately.
             }
+            ApprovalRequest::Subagent { .. } => {
+                // Subagent approval decisions are handled by send_subagent_decision.
+            }
         }
 
         if let Some(op) = match &self.approval_request {
@@ -406,6 +522,7 @@ impl UserApprovalWidget {
                 decision,
             }),
             ApprovalRequest::PlanMode { .. } => None,
+            ApprovalRequest::Subagent { .. } => None,
         } {
             self.app_event_tx.send(AppEvent::CodexOp(op));
         }
@@ -459,6 +576,7 @@ impl WidgetRef for &UserApprovalWidget {
             ApprovalRequest::Exec { .. } => "Allow command?",
             ApprovalRequest::ApplyPatch { .. } => "Apply changes?",
             ApprovalRequest::PlanMode { .. } => "Accept plan?",
+            ApprovalRequest::Subagent { .. } => "Run subagent?",
         };
         Line::from(title).render(title_area, buf);
 
@@ -521,6 +639,7 @@ mod tests {
                 alternatives: Vec::new(),
                 rollback: Vec::new(),
                 success_criteria: Vec::new(),
+                metadata: None,
             },
         }
     }
@@ -610,5 +729,65 @@ mod tests {
             }
         }
         assert!(saw_refine, "expected refine event");
+    }
+
+    #[test]
+    fn subagent_approve_sends_op() {
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let request = ApprovalRequest::Subagent {
+            id: "sub-1".into(),
+            name: "code-reviewer".into(),
+            description: Some("Reviews recent changes".into()),
+            extra_instructions: None,
+            allowed_tools: vec!["git_diff".into()],
+            requested_tools: vec!["git_diff".into()],
+            model: Some("gpt-4.1-mini".into()),
+        };
+        let mut widget = UserApprovalWidget::new(request, tx);
+        widget.handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert!(widget.is_complete());
+
+        let mut saw_approval = false;
+        while let Ok(event) = rx.try_recv() {
+            if let AppEvent::CodexOp(Op::SubagentApproval { id, name, decision }) = event {
+                assert_eq!(id, "sub-1");
+                assert_eq!(name, "code-reviewer");
+                assert_eq!(decision, SubagentApprovalDecision::Approved);
+                saw_approval = true;
+            }
+        }
+
+        assert!(saw_approval, "expected subagent approval op");
+    }
+
+    #[test]
+    fn subagent_deny_sends_op() {
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let request = ApprovalRequest::Subagent {
+            id: "sub-2".into(),
+            name: "code-reviewer".into(),
+            description: None,
+            extra_instructions: Some("Focus on tests".into()),
+            allowed_tools: vec![],
+            requested_tools: vec![],
+            model: None,
+        };
+        let mut widget = UserApprovalWidget::new(request, tx);
+        widget.handle_key_event(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(widget.is_complete());
+
+        let mut saw_denied = false;
+        while let Ok(event) = rx.try_recv() {
+            if let AppEvent::CodexOp(Op::SubagentApproval { id, name, decision }) = event {
+                assert_eq!(id, "sub-2");
+                assert_eq!(name, "code-reviewer");
+                assert_eq!(decision, SubagentApprovalDecision::Denied);
+                saw_denied = true;
+            }
+        }
+
+        assert!(saw_denied, "expected subagent denial op");
     }
 }

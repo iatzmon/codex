@@ -280,6 +280,7 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::PlanModeUpdated(_)
                     | EventMsg::PlanModeExited(_)
                     | EventMsg::PlanModeApplied(_)
+                    | EventMsg::SubagentApprovalRequest(_)
                     | EventMsg::HookListResponse(_)
                     | EventMsg::HookExecLogResponse(_)
                     | EventMsg::HookValidationResult(_)
